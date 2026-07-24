@@ -1,0 +1,15 @@
+# Keep the build context small and free of anything that is not the deliverable.
+.git/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+build/
+dist/
+*.egg-info/
+
+# ⚠️ Never into the image. Secrets belong in the container's environment via
+# `env_file:`, which reads .env from the HOST at run time — it must not be
+# baked into a layer where it would survive in the image history.
+.env

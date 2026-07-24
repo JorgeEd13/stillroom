@@ -1,0 +1,45 @@
+# Client material never lands in the engine repo. The engine is
+# clean-room: a client is a config file and an index directory, both of which
+# live outside this tree in the client's own private repo.
+configs/*.toml
+#
+# ⚠️ **ONE NEGATION PER SHIPPED FILE, and adding a file means adding a line.**
+#
+# `!configs/example.toml` alone was the whole exception list, so
+# `configs/example_evals.toml` — the eval-suite template — had never been
+# committed. A fresh clone had no eval example and
+# `test_the_example_suite_is_valid` failed there while passing in the working
+# tree, which is the same ignore-pattern failure happening twice in one repo.
+#
+# Found by the clean-clone check that rule requires. It is NOT written
+# as `!configs/example*.toml`: a glob would silently re-include a client's file
+# that happened to be named `example-acme.toml`, and that is the direction of
+# this rule that must never fail.
+!configs/example.toml
+!configs/example_evals.toml
+#
+# ⚠️ **ANCHORED TO THE ROOT, and the leading slash is load-bearing.**
+#
+# Written as `index/`, this matched **`src/stillroom/index/`** as well as the
+# client's index directory — so `embeddings.py`, `retrieval.py` and `store.py`
+# were **never committed**, and a fresh clone of this repo could not import the
+# package at all:
+#
+#     ModuleNotFoundError: No module named 'stillroom.index'
+#
+# Nothing local ever noticed, because Docker builds from the working tree and
+# the tests run against it: every artifact anybody looked at was assembled from
+# files git did not have. Found 2026-07-22 by cloning the repo, which is the
+# only way this is visible. Same reasoning as `corpus/`.
+/corpus/
+/index/
+*.client.toml
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+.env

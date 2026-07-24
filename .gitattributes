@@ -1,0 +1,17 @@
+# Line endings for the client-facing launchers.
+#
+# ⚠️ The `.cmd` files are double-clicked on a Windows machine, and until F4.5
+# they were stored and checked out LF-only with nothing asserting otherwise —
+# the eol of a client-facing artifact was whatever the packaging step happened
+# to produce. cmd.exe's handling of LF-only batch files is version-dependent and
+# the known failures are exactly around labels and `goto`, which is the
+# construct start.cmd now leans on harder after F4.5 removed its `call`
+# subroutine. This eliminates the risk by construction rather than by hoping.
+#
+# ⚠️ NOT VERIFIED on a real Windows machine — Wine's cmd is indifferent to line
+# endings, so the harness cannot see this either way. It is a safe change made
+# because it is free, not because a test caught it. F5.9 is what can confirm it.
+*.cmd text eol=crlf
+
+# The shell twin must stay LF; CRLF breaks a shebang.
+*.sh text eol=lf

@@ -1,0 +1,60 @@
+[project]
+name = "stillroom"
+version = "0.1.0"
+description = "A private RAG engine over a client's own documents, running on the client's own hardware."
+requires-python = ">=3.11"
+authors = [{ name = "Jorge Ribeiro" }]
+
+# Source-available under PolyForm Shield 1.0.0:
+# read it, audit it, use and modify it inside your organisation — but not to
+# provide a product that competes with it. It is NOT open source (not
+# OSI-approved); never describe it as such. See LICENSE.md.
+license = "LicenseRef-PolyForm-Shield-1.0.0"
+license-files = ["LICENSE.md"]
+
+dependencies = [
+    "langchain-core>=0.3",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "chromadb>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    # Encoding detection for client documents that are not UTF-8.
+    # Already present transitively through `requests`, so this adds nothing to
+    # the image or to the bill of materials — it is declared because the ingest
+    # now *depends* on it, and an undeclared dependency is one that disappears
+    # in the build where somebody prunes the tree. MIT.
+    "charset-normalizer>=3",
+]
+
+[project.optional-dependencies]
+# The local provider. This is the one every client build installs:
+# there is no cloud provider in the base dependency set at all.
+ollama = ["langchain-ollama>=0.2"]
+# Document loaders beyond plain text / Markdown. Both are pure-Python readers of
+# *digital* text; neither does OCR (scanned images are out of scope).
+docs = ["pypdf>=4", "python-docx>=1.1", "openpyxl>=3.1"]
+# Only installed for a client who explicitly asked for bring-your-own-key
+#. Never part of a default build.
+byok = ["langchain-google-genai>=2", "langchain-openai>=0.2"]
+dev = ["pytest", "httpx>=0.27"]
+
+[project.scripts]
+stillroom = "stillroom.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The web page and its string files are code as far as packaging is concerned:
+# without this the container installs an engine that serves a 500 on `/`, and
+# nothing in the Python test suite would notice.
+[tool.setuptools.package-data]
+stillroom = ["ui/static/*", "ui/locales/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
