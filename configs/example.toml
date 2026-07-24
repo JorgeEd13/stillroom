@@ -1,0 +1,183 @@
+# An example client config. A client is a config, not a fork.
+#
+# Copy this into the client's own private repo, never into this one — the
+# engine repo stays clean-room of client material.
+
+client = "Example Ltd"
+language = "en"
+
+# Client data. Both paths live outside this repo.
+index_path = "/srv/assistant/index"
+collection = "documents"
+
+# Generate a real one per engagement. This guards the only service on the
+# network that will answer questions about their confidential documents.
+api_key = "change-me"
+
+[model]
+# The default and the entire pitch: the model runs here, so the documents stay
+# here. There is no fallback provider field — by design. If the local
+# model fails, this build fails loudly rather than quietly reaching a cloud.
+kind = "ollama"
+# ⚠️ **LEAVE `base_url` UNSET.** It is commented out on purpose, and writing it
+# back in is how the worst of the wrong-computer defects returns.
+#
+# Unset means "wherever this deployment says": the container exports
+# `OLLAMA_HOST=http://host.docker.internal:11434`, and the engine reads it.
+# Written here, the config wins — deliberately, so an engagement can point at a
+# GPU box elsewhere — and `localhost` inside a container is *the container*, so
+# the model is unreachable and the service dies on startup.
+#
+# It does not fail at build time, which is what makes it dangerous: the image is
+# built `--network host`, where `localhost` really is the host, so `ingest` and
+# `bake` both pass and the build is green.
+#
+# Set it ONLY to name a machine that is not this one:
+# base_url = "http://gpu-box.internal:11434"
+# "auto" picks the largest catalog model that fits this machine's memory.
+name = "auto"
+keep_alive = "10m"
+
+# Bring-your-own-key looks like this instead, and is configured ONLY when a
+# client asked for it in writing after a failed hardware check (the no-cloud-fallback rule))
+# amendment). The key is read from the named environment variable — never
+# written in this file. Four providers:
+#
+# [model]
+# kind = "byok"
+# provider = "google"          # gemini
+# name = "gemini-2.0-flash"
+# api_key_env = "CLIENT_API_KEY"
+#
+# [model]
+# kind = "byok"
+# provider = "anthropic"       # claude
+# name = "claude-sonnet-5"
+# api_key_env = "CLIENT_API_KEY"
+#
+# [model]
+# kind = "byok"
+# provider = "openai"
+# name = "gpt-4o-mini"
+# api_key_env = "CLIENT_API_KEY"
+#
+# Anything OpenAI-compatible — Groq, Together, OpenRouter, Mistral, DeepSeek,
+# Azure OpenAI. base_url is REQUIRED here (defaulting silently to OpenAI would
+# send the client's documents to a vendor they did not choose):
+#
+# [model]
+# kind = "byok"
+# provider = "openai_compatible"
+# name = "llama-3.3-70b"
+# api_key_env = "CLIENT_API_KEY"
+# base_url = "https://api.groq.com/openai/v1"
+#
+# ⚠️ WORTH SPOTTING WHEN QUALIFYING: point base_url at a vLLM on the CLIENT'S
+# OWN network and this is still a local deployment — the cloud SDK talking to
+# their hardware, documents never leaving the building. A client whose app
+# machine fails the scan but who has a GPU box elsewhere is NOT a lost sale.
+
+[corpus]
+path = "/srv/assistant/documents"
+# Supported formats. Spreadsheets (.xlsx / .csv) are read cell-by-cell, sheet by
+# sheet, and rendered as `cell | cell` rows — most companies keep price
+# lists, inventories and thresholds in Excel. Anything not listed here is skipped
+# and NAMED in the ingest summary, never silently dropped. Scanned/image PDFs need
+# OCR, which is out of scope.
+include = [".md", ".txt", ".csv", ".pdf", ".docx", ".xlsx"]
+chunk_chars = 1200
+chunk_overlap = 150
+
+[retrieval]
+k = 5
+# Below this similarity for every passage, the engine says it does not know
+# rather than asking the model to improvise over unrelated text.
+#
+# ⚠️ 0.50, not 0.25 — MEASURED for bge-m3, not chosen. Reproduce with
+# `python benchmarks/retrieval_floor.py --sweep`. 0.25 was MiniLM's, and on a
+# realistic corpus it admitted every unrelated question under either embedder.
+# The workable range is 0.450-0.550; do not move it without re-running that.
+min_similarity = 0.50
+
+# One retry against the corpus's own vocabulary before refusing. It only runs
+# when nothing cleared the floor, and the better of the two searches wins — so
+# it can rescue a mistyped question but can never lower the gate.
+[retrieval.spelling_retry]
+enabled = true
+
+# The model that turns documents and questions into vectors. It runs on the
+# client's own Ollama, so nothing is sent anywhere.
+#
+# ⚠️ THIS IS A SECOND MODEL. The client pulls it as well as the chat model:
+#     ollama pull bge-m3:567m
+# ⚠️ Changing it invalidates the whole index and every cached answer, by design
+# — the name is part of the corpus fingerprint. It is a build-time decision.
+# base_url is left UNSET on purpose: unset means "wherever this deployment
+# says", and the container supplies the right address. Set it only to name a
+# DIFFERENT machine, e.g. a GPU box elsewhere on the network.
+[embedding]
+model = "bge-m3:567m"
+
+[capacity]
+# The document limit agreed for this engagement.
+#
+# ⚠️ `warn_only` defaults to TRUE in the code, and a DELIVERED config should set
+# it to false. The default is right during a build — discovering an over-limit
+# corpus while standing in front of the client should start a conversation, not
+# break the build — and wrong afterwards, when the same default means a
+# re-ingest silently grows past what was agreed and nobody ever reads the
+# warning.
+#
+# This is not a lock and cannot be one: the engine ships every capability to
+# every deployment, on hardware the client owns, with the source public. It
+# makes exceeding the limit a deliberate act rather than a silent default, and
+# `stillroom doctor` reports the difference against the delivery manifest.
+max_documents = 50
+warn_only = false
+
+[answer_cache]
+enabled = true
+threshold = 0.90
+# How many questions are pre-computed.
+#
+# WRITE THESE IN THE LANGUAGE THE DOCUMENTS ARE IN. They are cache keys, matched
+# by embedding against the corpus — a translated question silently misses and
+# drops every asker onto the slow model, which is the exact failure the feature
+# exists to prevent.
+curated = [
+    "What is the refund window?",
+    "How much notice do I have to give?",
+    "Who approves an expense over the limit?",
+]
+
+# Conversation memory. On by default: users ask follow-ups, and a
+# build that cannot answer "and after that?" fails at the first natural thing
+# anybody does with a chat box.
+#
+# The numbers are a budget, not a preference. The context window is shared with
+# the retrieved passages, and the passages are the half that must not be
+# squeezed — a follow-up that fits at the cost of the paragraph it should have
+# quoted is a worse answer, not a longer one. History is trimmed silently: the
+# client never sees a "conversation too long" error, because that is our budget
+# problem and not something they did.
+[conversation]
+enabled = true
+max_turns = 6
+max_chars_per_turn = 600
+
+# The client's own source of truth — the same role MEMORY.md plays for a working
+# session. Facts true of the ORGANISATION rather than of any one document: what
+# the company does, what its abbreviations mean, which of two conflicting
+# handbooks supersedes the other. Nobody writes a document called "things
+# everyone here already knows", so retrieval cannot supply these, and their
+# absence is what makes an assistant read as an outsider.
+#
+# ⚠️ Background, never evidence. It is never cited, because it was never
+# retrieved. Keep it short: every character here is a character not available
+# for the passages that ARE evidence.
+#
+# The file is configuration, but producing it is an
+# interview, and it is the slowest hour of an engagement.
+# [context]
+# path = "/app/context.md"
+# max_chars = 2000

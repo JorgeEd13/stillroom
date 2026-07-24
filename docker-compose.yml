@@ -1,0 +1,203 @@
+# How the client runs it.
+#
+# ⚠️ LANDMINE 4 — `environment:` SILENTLY OVERRIDES `.env`.
+#
+# On an earlier project, a provider set in `.env` was ignored because an
+# `environment:` block hard-set it, and the resulting placeholder key produced
+# 500s that looked like an application bug. The root `.env` file only does
+# `${VAR}` substitution in this file — it is NOT injected into the container
+# unless `env_file:` says so.
+#
+# So: `env_file:` is how the container gets variables, and `environment:` is
+# used ONLY for values that must not be overridable. Do not add a variable to
+# both.
+
+# Where the model is, defined ONCE and shared by the service and its probe.
+#
+# Not overridable: the container talks to the Ollama on the host, and
+# `host.docker.internal` is the portable way to reach it. Changing this
+# per-environment is what `.env` + the config file are for.
+#
+# ⚠️ The anchor is not tidiness. The probe below exists to answer *"can the
+# assistant reach the model?"*, and a probe pointed at a different address than
+# the assistant answers a different question — which is the whole family of
+# defect this launcher keeps finding.
+x-model-address: &model-address
+  OLLAMA_HOST: http://host.docker.internal:11434
+
+# ⚠️ **The embedding model is a SECOND prerequisite as of the move to bge-m3**, and the
+# client has no reason to know it exists — the runbook told them to pull the
+# chat model. It is anchored here for the same reason the address is: the probe
+# below must ask about the model the engine will actually use, and a probe that
+# names a different tag answers a different question.
+#
+# It is only the DEFAULT. `client.toml`'s `[embedding] model` wins, exactly as
+# it does for the chat model, so an engagement that pins something else must
+# change it here too — which is why `stillroom doctor` checks the real one from
+# the config rather than trusting this file.
+x-embedding-model: &embedding-model
+  STILLROOM_EMBEDDING_MODEL: bge-m3:567m
+
+services:
+  assistant:
+    build:
+      context: .
+      target: client
+      # ⚠️ Without this, the client's FIRST `start` fails with a Python
+      # traceback. Compose builds the image when it is missing, and the build
+      # runs `bake` — which needs the model, which is on the host. A default
+      # bridge network cannot reach it, so the build dies with
+      # `httpx.ConnectError: [Errno 111] Connection refused` in front of the
+      # client. This is the compose-file half of the `--network host` note in
+      # the Dockerfile; the two must not drift apart.
+      #
+      # Found 2026-07-21 by running `docker compose up -d` on a clean delivery
+      # folder. The manual build documented in the Dockerfile had always passed
+      # `--network host`, so nothing revealed that compose did not.
+      network: host
+
+      args:
+        # ⚠️ **No value, and the missing colon-dash is the whole point** — this
+        # is `BASE_IMAGE:` with nothing after it, not `${VAR:-}`.
+        #
+        # The default lives in exactly one place, `ARG BASE_IMAGE` at the top of
+        # the Dockerfile, because a version repeated in two files is a version
+        # that will eventually disagree with itself. In this form Compose takes
+        # the value from the environment and passes **nothing** when it is unset,
+        # so the Dockerfile's default stands.
+        #
+        # Written the obvious way — `BASE_IMAGE: ${STILLROOM_BASE_IMAGE:-}` — it
+        # renders as `BASE_IMAGE: ""`, overrides the Dockerfile default with the
+        # empty string, and the build dies on `FROM  AS client`. Measured, not
+        # reasoned about.
+        #
+        # ⚠️ The environment variable is therefore `BASE_IMAGE` — the KEY's own
+        # name — not one of our choosing. `start.sh` exports exactly that, and
+        # only in the fallback where the prepared image file is missing.
+        BASE_IMAGE:
+    image: stillroom-${CLIENT_SLUG:-client}:latest
+
+    # ⚠️ Because the service names an image it also BUILDS, Compose tries to pull
+    # it first and prints
+    #
+    #     Image stillroom-client:latest  pull access denied for stillroom-client,
+    #     repository does not exist or may require 'docker login'
+    #
+    # …before quietly building it anyway. Nothing is wrong, but the client is
+    # reading that line during the one minute that decides whether they trust
+    # this, and it names a login they do not have. This image is never in a
+    # registry — it is built here or loaded from the tarball — so the pull is
+    # not merely noisy, it is meaningless.
+    pull_policy: build
+
+    # The client's secrets and per-machine settings. The API key for a BYOK
+    # build lives here — never in client.toml, which is committed.
+    # ⚠️ `required: false` is not tidiness — without it the client's FIRST
+    # double-click fails.
+    #
+    # A missing `env_file` is a hard error in Compose, and the default build has
+    # nothing to put in one: a local-Ollama engagement has no secrets at all.
+    # So a clean delivery folder produced
+    #     env file /path/.env not found: stat ...: no such file or directory
+    # on `start`, in front of the client, before anything had a chance to work.
+    # Found 2026-07-21 by running the launcher on a fresh folder rather than
+    # reading it.
+    #
+    # A `.env` is still how a BYOK engagement supplies its key (see
+    # `.env.example`) — it is optional, not unused.
+    env_file:
+      - path: .env
+        required: false
+
+    environment: *model-address
+
+    # ⚠️ Loopback ONLY by default. This service answers questions about the
+    # documents the client most wanted kept private, and it sits behind nothing.
+    # Publishing it on 0.0.0.0 exposes it to their whole office network; that is
+    # a deliberate decision for the "team on a shared network" engagement
+    # asked for explicitly, not a default.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    # The index persists across restarts so a restart is not a re-embed.
+    volumes:
+      - assistant-index:/app/index
+      # Documents are mounted read-only: the assistant reads the corpus, and
+      # nothing it does should ever be able to modify the client's originals.
+      - ./documents:/app/documents:ro
+
+    # `host.docker.internal` resolves natively on Docker Desktop; on Linux it
+    # needs this mapping.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    restart: unless-stopped
+
+    healthcheck:
+      # The health route is open by design so this probe needs no key.
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      # Generous: a cold model load on a CPU-only machine is genuinely slow, and
+      # a restart loop during the first load is worse than waiting.
+      start_period: 120s
+      retries: 3
+
+  # ------------------------------------------------------------------------
+  # The preflight probe. Never starts with `up` — it is in a profile, and the
+  # launcher runs it explicitly with `docker compose run --rm probe`.
+  #
+  # ⛔ **THIS SERVICE EXISTS BECAUSE THE PROBE WAS ON THE WRONG NETWORK**
+  #. The launcher used to run `docker run --rm busybox …` with no
+  # network specified, which lands on the **default** bridge — a different
+  # network from the one Compose builds for this project, with a different
+  # subnet and a different bridge interface on the host.
+  #
+  # Measured 2026-07-22, on a host firewall that allowed the default bridge and
+  # not the project's:
+  #
+  #     from the default bridge (what the launcher checked)  -> HTTP 200
+  #     from the compose network (what the assistant uses)   -> HTTP 000
+  #
+  # **The preflight passed and the product was dead.** Declaring the probe as a
+  # service is what makes "the same network" structural rather than remembered:
+  # Compose puts it on the project network, with the same `extra_hosts` and the
+  # same address, because they are the same anchor.
+  probe:
+    profiles: ["probe"]
+    image: busybox:latest
+    environment: *model-address
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # `$$` escapes Compose's own interpolation, so the variable is read inside
+    # the container rather than substituted from this file.
+    command: ["sh", "-c", "wget -q -T 5 -O /dev/null \"$${OLLAMA_HOST}/api/tags\""]
+
+  # ------------------------------------------------------------------------
+  # ⚠️ **The second probe, and it exists because `ingest` gained a dependency**
+  #. Reaching Ollama is no longer enough to know the build will work:
+  # reading the client's documents now needs `bge-m3` specifically, and a client
+  # who followed the runbook has pulled only the chat model. Without this, their
+  # first double-click reaches "Preparing the assistant…" and then dies inside
+  # the build on a model nobody told them about.
+  #
+  # It asks for an **embedding**, not for the tag list. A tag proves the weights
+  # are on disk; only an embedding proves the server can load and run them —
+  # and this is the project where "reading about it is not running it" has cost
+  # four phases' worth of defects.
+  probe-embedding:
+    profiles: ["probe"]
+    image: busybox:latest
+    environment:
+      <<: [*model-address, *embedding-model]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - "sh"
+      - "-c"
+      - "wget -q -T 60 -O /dev/null --header='Content-Type: application/json'
+         --post-data='{\"model\":\"'\"$${STILLROOM_EMBEDDING_MODEL}\"'\",\"input\":[\"probe\"]}'
+         \"$${OLLAMA_HOST}/api/embed\""
+
+volumes:
+  assistant-index:
