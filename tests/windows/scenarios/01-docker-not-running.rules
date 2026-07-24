@@ -1,0 +1,16 @@
+docker info|1|
+# Baseline: everything healthy, no base image cached, tarball present and good.
+docker info|0|
+docker compose run --rm probe|0|
+docker compose run --rm probe-embedding|0|
+docker compose version|0|
+docker image inspect stillroom-base:0.1.0|1|
+docker load -i stillroom-base-0.1.0.tar.gz|0|
+docker compose ps --status running --quiet assistant|0|
+docker compose stop assistant|0|
+docker compose run --rm --no-deps assistant stillroom refresh --config client.toml|0|    Corpus changed: 1 documents indexed.\n    Rebaked 1 instant answer(s).
+docker compose up -d|0|
+docker compose logs --tail=15 assistant|0|assistant  | ProviderError: the model at host.docker.internal:11434 is not reachable\nassistant  | Application startup failed. Exiting.
+curl -s -f -m 5 http://localhost:11434/api/tags|0|
+curl -s -f -m 3 http://localhost:8000/api/health|0|
+timeout /t 2 /nobreak|0|
