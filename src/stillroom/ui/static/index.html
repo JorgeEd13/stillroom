@@ -1,0 +1,103 @@
+<!doctype html>
+<!--
+  The page the client's team opens.
+
+  Everything it loads is served by this same process from disk next to it:
+  there is no CDN, no webfont, no analytics tag and no external image anywhere
+  in this product. That is not minimalism — this service exists because the
+  client's documents must not leave their building, and a page that contacted a
+  third party on every view would break that claim on the one screen where they
+  can see it happening.
+
+  The markup here is the shell only. Everything with client text in it is filled
+  in by app.js from /api/ui, so the same file serves every engagement.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Nothing about this page should ever be indexed or prefetched by
+         anything: it is an internal tool over confidential documents. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Assistant</title>
+    <!-- Generated per client from [ui.theme]; loaded FIRST so the stylesheet
+         below can read every value from it and hard-code none. -->
+    <link rel="stylesheet" href="/ui/theme.css" />
+    <link rel="stylesheet" href="/ui/app.css" />
+    <link rel="stylesheet" href="/ui/custom.css" />
+    <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <div class="app" id="app" hidden>
+      <header class="header">
+        <div class="brand">
+          <img class="logo" id="logo" alt="" hidden />
+          <div>
+            <h1 class="title" id="title">Assistant</h1>
+            <p class="posture" id="posture"></p>
+          </div>
+        </div>
+        <div class="tools">
+          <select class="control" id="lang" hidden aria-label="Language"></select>
+          <button class="control" id="theme" type="button"></button>
+          <button class="control" id="help" type="button" aria-label="Keyboard shortcuts">?</button>
+          <button class="control" id="signout" type="button" hidden></button>
+          <!-- The conversation budget, shown rather than announced.
+               `aria-hidden` on the bar itself because the label carries the
+               same fact for a screen reader, and a repainting div does not. -->
+          <div class="budget" id="budget" hidden>
+            <span class="budget-track" aria-hidden="true">
+              <span class="budget-fill" id="budget-fill"></span>
+            </span>
+            <span class="visually-hidden" id="budget-label"></span>
+          </div>
+          <button class="control" id="new" type="button"></button>
+        </div>
+      </header>
+
+      <p class="note" id="lang-note" hidden></p>
+
+      <main class="chat" id="chat" aria-live="polite"></main>
+
+      <section class="suggestions" id="suggestions" hidden>
+        <h2 class="suggestions-title" id="suggestions-title"></h2>
+        <p class="suggestions-hint" id="suggestions-hint"></p>
+        <div class="chips" id="chips"></div>
+      </section>
+
+      <form class="composer" id="composer">
+        <textarea
+          class="input"
+          id="input"
+          rows="1"
+          autocomplete="off"
+          spellcheck="true"
+        ></textarea>
+        <button class="send" id="send" type="submit"></button>
+      </form>
+    </div>
+
+    <!-- Shown only when [ui] access = "key". The key is never embedded in this
+         page: a page that carries the credential guarding it is not
+         authenticated, it is decorated. -->
+    <div class="gate" id="gate" hidden>
+      <form class="gate-card" id="gate-form">
+        <h2 id="gate-title"></h2>
+        <p id="gate-body"></p>
+        <label class="gate-label" for="gate-input" id="gate-label"></label>
+        <input class="gate-input" id="gate-input" type="password" autocomplete="off" />
+        <p class="gate-error" id="gate-error" hidden></p>
+        <button class="send" id="gate-button" type="submit"></button>
+      </form>
+    </div>
+
+    <dialog class="sheet" id="shortcuts">
+      <h2 id="shortcuts-title"></h2>
+      <dl id="shortcuts-list"></dl>
+      <button class="control" id="shortcuts-close" type="button"></button>
+    </dialog>
+
+    <script src="/ui/app.js"></script>
+  </body>
+</html>

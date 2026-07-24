@@ -1,0 +1,667 @@
+/*
+ * Copyright (c) Jorge Ribeiro.
+ * Licensed under PolyForm Shield 1.0.0 - see LICENSE.md.
+ * Source-available, not open source: any purpose is permitted except
+ * providing a product that competes with this software.
+ */
+/*
+  The interface, styled entirely through the variables in /ui/theme.css.
+
+  ⚠️ THE RULE FOR THIS FILE: no literal colour, radius, duration or font stack
+  below this comment. Every one of them is a `var(--…)` rendered per client from
+  their `[ui.theme]` config, which is what makes "match our brand" a TOML edit
+  an hour before handover instead of a code change and a container rebuild.
+  A hard-coded `#fff` here is not a small shortcut — it is the one pixel that
+  stays wrong in every future client's build.
+
+  The only exceptions are structural values with no design opinion (1px hairlines,
+  100%, transparent) and the rgba() overlays that must sit on top of any palette.
+*/
+
+* {
+  box-sizing: border-box;
+}
+
+/* ⚠️ Not a nicety. The `hidden` attribute works by setting `display: none` in
+   the browser's own stylesheet, so ANY author rule that sets `display` — and
+   `.app` and `.gate` both do — silently wins and the element stays on screen.
+   Found by looking at a screenshot: the access-key card was sitting on top of a
+   working chat, with none of its labels filled in, because it had never been
+   shown on purpose. Everything hidden here is hidden for a reason (the gate
+   before a key, the app behind it, the language switcher on a one-language
+   build), so this rule is load-bearing. */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg);
+  background-image: var(--backdrop-image);
+  background-size: var(--backdrop-size);
+  background-attachment: fixed;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--fs);
+  line-height: var(--lh);
+}
+
+/* The motion budget is a config value, but a user who has asked their operating
+   system for less motion outranks it. */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+.app {
+  max-width: 60rem;
+  min-height: 100%;
+  margin: 0 auto;
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+/* --------------------------------------------------------------- header --- */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  flex-wrap: wrap;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+.logo {
+  height: 2.25rem;
+  width: auto;
+  max-width: 12rem;
+  object-fit: contain;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.15em;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.posture {
+  margin: 0.15rem 0 0;
+  font-size: 0.8em;
+  color: var(--muted);
+}
+
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.control {
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+  transition: color var(--dur) ease, border-color var(--dur) ease,
+    transform var(--dur) ease;
+}
+
+.control:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  transform: translateY(var(--lift));
+}
+
+.control:focus-visible,
+.input:focus-visible,
+.send:focus-visible,
+.chip:focus-visible,
+.gate-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.note {
+  margin: 0;
+  font-size: 0.8em;
+  color: var(--faint);
+  border-left: 2px solid var(--line);
+  padding-left: 0.6rem;
+}
+
+/* ----------------------------------------------------------------- chat --- */
+
+.chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.empty {
+  margin: auto 0;
+  text-align: center;
+  color: var(--muted);
+  padding: 2rem 1rem;
+}
+
+.empty h2 {
+  margin: 0 0 0.5rem;
+  color: var(--text);
+  font-size: 1.05em;
+}
+
+.empty p {
+  margin: 0 auto;
+  max-width: 34rem;
+  font-size: 0.9em;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  animation: rise var(--dur) ease both;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.turn.user {
+  align-items: flex-end;
+}
+
+.who {
+  font-size: 0.72em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.bubble {
+  max-width: 92%;
+  padding: var(--pad);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  overflow-wrap: anywhere;
+}
+
+.turn.user .bubble {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: transparent;
+}
+
+/* Markdown, rendered by app.js into real elements. This block is why landmine 3
+   is dead: the model's `**bold**` and `##` arrive as <strong> and <h3>, and are
+   styled here rather than shown as syntax. */
+.md > *:first-child {
+  margin-top: 0;
+}
+
+.md > *:last-child {
+  margin-bottom: 0;
+}
+
+.md h1,
+.md h2,
+.md h3 {
+  font-size: 1.02em;
+  font-weight: 650;
+  margin: 1em 0 0.4em;
+}
+
+.md p {
+  margin: 0 0 0.7em;
+}
+
+.md ul,
+.md ol {
+  margin: 0 0 0.7em;
+  padding-left: 1.3rem;
+}
+
+.md li {
+  margin: 0.2em 0;
+}
+
+.md blockquote {
+  margin: 0 0 0.7em;
+  padding-left: 0.8rem;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+}
+
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--panel-2);
+  border-radius: var(--radius-sm);
+  padding: 0.1em 0.35em;
+}
+
+.md pre {
+  margin: 0 0 0.7em;
+  padding: 0.7rem 0.85rem;
+  background: var(--panel-2);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.md pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.md table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 0.7em;
+  font-size: 0.92em;
+}
+
+.md th,
+.md td {
+  border: 1px solid var(--line);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+}
+
+.md th {
+  background: var(--panel-2);
+}
+
+/* A link in an answer is rendered as text, never as an anchor — see app.js. */
+.md .link-text {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+
+.md .link-href {
+  color: var(--faint);
+  font-size: 0.85em;
+}
+
+/* The [1] markers the model emits, tied to the source list below the answer. */
+.cite {
+  font-size: 0.75em;
+  vertical-align: super;
+  color: var(--accent);
+  background: var(--panel-2);
+  border-radius: var(--radius-sm);
+  padding: 0 0.3em;
+  margin: 0 0.1em;
+  cursor: pointer;
+}
+
+.cite[aria-current="true"] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+/* -------------------------------------------------------------- sources --- */
+
+.sources {
+  margin-top: 0.2rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.5rem;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.sources h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.source {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur) ease;
+}
+
+.source[aria-current="true"] {
+  background: var(--panel-2);
+}
+
+.source-n {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.72em;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.05rem 0.4rem;
+  margin-left: 0.4rem;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 0.88em;
+}
+
+.dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.hint {
+  font-size: 0.82em;
+  color: var(--faint);
+}
+
+.error {
+  color: var(--error);
+  border: 1px solid var(--error);
+  border-radius: var(--radius);
+  padding: var(--pad);
+}
+
+/* ---------------------------------------------------------- suggestions --- */
+
+.suggestions-title {
+  margin: 0;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.suggestions-hint {
+  margin: 0.15rem 0 0.5rem;
+  font-size: 0.8em;
+  color: var(--faint);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.chip {
+  font: inherit;
+  font-size: 0.85em;
+  text-align: left;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.4rem 0.7rem;
+  cursor: pointer;
+  transition: border-color var(--dur) ease, transform var(--dur) ease;
+}
+
+.chip:hover {
+  border-color: var(--accent);
+  transform: translateY(var(--lift));
+}
+
+.chip-n {
+  color: var(--faint);
+  margin-right: 0.4rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------- composer --- */
+
+.composer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  padding-top: 0.5rem;
+  background: linear-gradient(to top, var(--bg) 65%, transparent);
+}
+
+.input {
+  flex: 1;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--pad);
+  resize: none;
+  max-height: 12rem;
+  transition: border-color var(--dur) ease;
+}
+
+.input:focus {
+  border-color: var(--accent);
+}
+
+.send {
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent-text);
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: var(--pad);
+  cursor: pointer;
+  transition: transform var(--dur) ease, opacity var(--dur) ease;
+}
+
+.send:hover {
+  transform: translateY(var(--lift));
+}
+
+.send:disabled {
+  opacity: 0.55;
+  cursor: default;
+  transform: none;
+}
+
+/* ------------------------------------------------- access gate & sheets --- */
+
+.gate {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: var(--bg);
+}
+
+.gate-card {
+  width: min(26rem, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.gate-card h2 {
+  margin: 0;
+  font-size: 1.05em;
+}
+
+.gate-card p {
+  margin: 0;
+  font-size: 0.88em;
+  color: var(--muted);
+}
+
+.gate-label {
+  font-size: 0.8em;
+  color: var(--faint);
+}
+
+.gate-input {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--pad);
+}
+
+.gate-error {
+  color: var(--error);
+  font-size: 0.85em;
+}
+
+.sheet {
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 1.25rem 1.5rem;
+  max-width: 26rem;
+}
+
+.sheet::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.sheet h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1em;
+}
+
+.sheet dl {
+  margin: 0 0 1rem;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.4rem 0.9rem;
+  font-size: 0.88em;
+}
+
+.sheet dt {
+  color: var(--muted);
+}
+
+.sheet kbd {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.1em 0.4em;
+}
+
+.sheet dd {
+  margin: 0;
+}
+
+@media (max-width: 34rem) {
+  .bubble {
+    max-width: 100%;
+  }
+
+  .posture {
+    display: none;
+  }
+}
+
+/*
+  The conversation budget, shown rather than announced.
+
+  A deliberate choice, and the reasoning is sound: the limit is real and the user
+  should feel it approaching, but SAYING so costs a sentence in the interface
+  and — if it were said by the model — tokens in every single request, on the
+  hardware that can least afford them. A meter is free and pre-attentive.
+
+  ⚠️ No literal colour here (golden rule 12). The bar heats from `--accent`
+  towards `--error`, both of which every palette already defines, mixed by a
+  percentage the script sets. So it inherits any client's theme automatically
+  and there is no fourth colour to keep in sync with three palettes.
+*/
+.budget {
+  display: inline-flex;
+  align-items: center;
+}
+
+.budget-track {
+  display: block;
+  width: 2.5rem;
+  height: 0.3rem;
+  border-radius: 999px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.budget-fill {
+  display: block;
+  height: 100%;
+  width: var(--budget-fill, 0%);
+  border-radius: inherit;
+  background: color-mix(in oklab, var(--accent), var(--error) var(--budget-heat, 0%));
+  transition: width 240ms ease, background-color 240ms ease;
+}
+
+/* The meter is decorative; this carries the same fact for a screen reader. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .budget-fill {
+    transition: none;
+  }
+}
