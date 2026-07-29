@@ -13,7 +13,7 @@
   as Markdown (see `api.AskResponse`) and are turned into real elements by
   `renderMarkdown` below, one `createElement`/`textContent` at a time. That is
   what makes it safe to render text that a model wrote about documents somebody
-  else supplied — and it is what stops a UI showing
+  else supplied — and it is what kills landmine 3, where the showcase's UI shows
   `**bold**` and `##` on screen as literal syntax.
 
   Everything the client can change (colours, shape, density, motion, background,
@@ -41,7 +41,7 @@
     controller: null, // AbortController for the running stream
     suggestions: [],
     /*
-      The conversation, and it lives HERE rather than on the server.
+      The conversation, and it lives HERE rather than on the server (ADR-046).
 
       Two consequences worth stating: the service stays stateless, so a
       transcript of the client's most confidential questions is never written to
@@ -60,7 +60,7 @@
     so the server can throw away forty-four wastes the client's own bandwidth and
     memory on the machine that is already running the model.
 
-    ⚠️ The value comes from `/api/ui`, never from a constant here. The
+    ⚠️ The value comes from `/api/ui`, never from a constant here (ADR-047). The
     server is what actually trims; a second copy of the number would drift the
     first time it is tuned for a client, and the meter would then be showing a
     limit that is not the limit. This is only the fallback for the moment before
@@ -341,11 +341,28 @@
     into visible progress rather than a page that looks frozen — the honest
     trade-off named up front, made legible.
   */
-  function streamAsk(question, onEvent, signal) {
+  function streamAsk(question, onEvent, signal, fresh) {
+    /*
+      !! A regenerate deliberately sends NO history, and that is what makes it
+      work rather than merely look like it works.
+
+      The entry it exists to dislodge was warmed from a standalone question, and
+      the engine only writes to the cache when history is empty (ADR-046). Send
+      the conversation along and the corrected answer would render on THIS
+      screen while the wrong one stayed cached for everybody after -- the exact
+      failure the control was added to fix, wearing a working-looking UI.
+
+      Asking it standalone is also the honest reading: "answer this again" is a
+      question about the documents, not about the conversation.
+    */
     return fetch("/api/ask/stream", {
       method: "POST",
       headers: headers(),
-      body: JSON.stringify({ question: question, history: state.history }),
+      body: JSON.stringify({
+        question: question,
+        history: fresh ? [] : state.history,
+        fresh: !!fresh,
+      }),
       signal: signal,
     }).then(function (response) {
       if (response.status === 401) {
@@ -442,7 +459,7 @@
     });
   }
 
-  function ask(question) {
+  function ask(question, fresh) {
     if (state.busy || !question.trim()) return;
     state.busy = true;
     el("send").disabled = true;
@@ -482,6 +499,7 @@
       });
     }
 
+    var servedCurated = false;
     state.controller = new AbortController();
 
     streamAsk(
@@ -489,6 +507,7 @@
       function (event) {
         if (event.type === "cached") {
           clearTimeout(slowTimer);
+          servedCurated = !!event.curated;
           answer = event.reply;
           citations = event.citations || [];
           bubble.replaceChildren(
@@ -517,7 +536,8 @@
           bubble.replaceChildren(errorBox(event.message));
         }
       },
-      state.controller.signal
+      state.controller.signal,
+      fresh
     )
       .then(function () {
         if (answer) {
@@ -528,6 +548,11 @@
             state.history = state.history.slice(-maxTurns);
           }
           updateBudget();
+          offerRegenerate(bubble, question, servedCurated);
+          // Cheap, and this is when it matters: a client who swapped their
+          // documents while the tab was open finds out at their next question
+          // instead of never.
+          checkCorpus();
         }
       })
       .catch(function (error) {
@@ -549,6 +574,68 @@
 
     el("send").textContent = t("stop");
     el("send").disabled = false;
+  }
+
+  /*
+    "Answer again" — the way out of a wrong answer that got cached.
+
+    Every live answer is warmed (ADR-008), so a confidently wrong one is served
+    instantly and identically to everyone afterwards, and before 2026-07-29
+    nothing short of a re-ingest could dislodge it. On the small models the
+    hardware check admits, that is how ONE bad answer becomes permanent.
+
+    !! Never offered on a CURATED answer. Those were written and reviewed before
+    delivery; letting a client replace one with live model output that keeps
+    wearing the INSTANT badge would quietly convert reviewed text into
+    unreviewed text. The engine refuses the overwrite too — this is the second
+    of the two locks, on the surface where the mistake would be made.
+  */
+  function offerRegenerate(bubble, question, wasCurated) {
+    if (wasCurated) return;
+    if (bubble.querySelector(".again")) return;
+
+    var row = tag("div", null, "again");
+    var button = tag("button", t("answerAgain"), "again-button");
+    button.type = "button";
+    button.title = t("answerAgainHint");
+    button.addEventListener("click", function () {
+      ask(question, true);
+    });
+    row.appendChild(button);
+    bubble.appendChild(row);
+  }
+
+  /*
+    Is this process still serving the documents on disk?
+
+    The engine has always been able to answer that (`/api/health` ->
+    `corpus_current`); until 2026-07-29 nothing on the page asked. A client who
+    replaced their documents and forgot to run start again kept getting answers
+    from the previous version, with no signal anywhere — on a product whose
+    entire promise is "answers from YOUR documents", the worst silent failure
+    available.
+
+    Deliberately advisory: it never blocks a question. The assistant is still
+    working, it is just working from something older than what is on disk, and
+    saying so is the whole job.
+  */
+  function checkCorpus() {
+    fetch("/api/health", { headers: headers() })
+      .then(function (r) {
+        return r.ok ? r.json() : null;
+      })
+      .then(function (health) {
+        if (!health) return;
+        var stale = health.corpus_current === false;
+        el("stale-note").hidden = !stale;
+        if (stale) {
+          el("stale-title").textContent = t("staleTitle");
+          el("stale-body").textContent = " " + t("staleBody");
+        }
+      })
+      .catch(function () {
+        /* advisory only: a failed probe must never interrupt the assistant */
+      });
   }
 
   function badge(text) {
@@ -829,6 +916,10 @@
 
     applyStrings();
     loadSuggestions();
+    // On open as well as after each answer: somebody who replaced their
+    // documents and reopened the page must be told before their first
+    // question, not after it.
+    checkCorpus();
     el("input").focus();
   }
 
@@ -852,7 +943,7 @@
       })
       .then(function (payload) {
         state.ui = payload;
-        /* The server's own limit, not a copy of it. */
+        /* The server's own limit, not a copy of it (ADR-047). */
         if (typeof payload.max_turns === "number") maxTurns = payload.max_turns;
         updateBudget();
 

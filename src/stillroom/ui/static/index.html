@@ -43,7 +43,7 @@
           <button class="control" id="theme" type="button"></button>
           <button class="control" id="help" type="button" aria-label="Keyboard shortcuts">?</button>
           <button class="control" id="signout" type="button" hidden></button>
-          <!-- The conversation budget, shown rather than announced.
+          <!-- The conversation budget, shown rather than announced (ADR-047).
                `aria-hidden` on the bar itself because the label carries the
                same fact for a screen reader, and a repainting div does not. -->
           <div class="budget" id="budget" hidden>
@@ -57,6 +57,18 @@
       </header>
 
       <p class="note" id="lang-note" hidden></p>
+
+      <!-- Shown when the index on disk no longer matches what this
+           process is serving. The engine has always been able to tell
+           (`/api/health` -> `corpus_current`); until 2026-07-29 nothing
+           on the page read it, so a client who replaced their documents
+           and forgot to restart kept getting the old answers with no
+           signal at all. On a product sold on "answers from YOUR
+           documents", that is the worst silent failure available. -->
+      <div class="alert" id="stale-note" role="status" hidden>
+        <strong id="stale-title"></strong>
+        <span id="stale-body"></span>
+      </div>
 
       <main class="chat" id="chat" aria-live="polite"></main>
 

@@ -63,7 +63,7 @@ class HistoryTurn(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    # ⚠️ **The conversation lives in the browser, not on the server**.
+    # ⚠️ **The conversation lives in the browser, not on the server** (ADR-046).
     #
     # It keeps this service stateless — no sessions, no per-user storage, no
     # transcript of the client's most confidential questions sitting in a volume
@@ -73,8 +73,19 @@ class AskRequest(BaseModel):
     # The cost is that history is user-composed, so it is untrusted input: it is
     # length-capped here, turn-capped in `conversation.trim`, and
     # marker-stripped in `prompts`. In a single-tenant local deployment a user
-    # who forges their own history has misled only themselves.
+    # who forges their own history has misled only themselves (ADR-045).
     history: tuple[HistoryTurn, ...] = ()
+    # "Answer this again, properly." Set by the regenerate control in the UI.
+    #
+    # ⚠️ It exists because a wrong answer is CACHED. Every live answer is warmed,
+    # so a confidently wrong one is served instantly and identically to everyone
+    # afterwards, and until this there was no way for anybody to dislodge it
+    # short of a re-ingest. On a small local model that is how one bad answer
+    # becomes permanent (found 2026-07-29, `dgp-05`).
+    #
+    # Safe to expose: a single-tenant service on the client's own hardware,
+    # where the worst a user can do with it is spend their own CPU.
+    fresh: bool = False
 
     def turns(self) -> tuple[Turn, ...]:
         return tuple(Turn(question=t.question, answer=t.answer) for t in self.history)
@@ -83,7 +94,8 @@ class AskRequest(BaseModel):
 class AskResponse(BaseModel):
     # ⚠️ `reply` IS MARKDOWN. Any UI consuming it MUST render it.
     #
-    # A UI that renders answers as plain text shows `**bold**` and `##`
+    # This is landmine 3 from `sistema/achados/receivables-agent.md`: the
+    # showcase's chat UI renders answers as plain text, so `**bold**` and `##`
     # appear literally on screen. It reads as unpolished, and it is not
     # cosmetic — it is what **blocked using the live demo screenshot as the
     # product screenshot**, because the one image meant to show quality
@@ -106,13 +118,13 @@ class HealthResponse(BaseModel):
     fingerprint: str | None = None
     # The central claim, derived from the config rather than promised.
     # True for a local model AND for a client-hosted endpoint on their own
-    # network — both keep the documents in the building.
+    # network — both keep the documents in the building (ADR-023).
     documents_stay_on_premises: bool
     # The same fact in a sentence the client can read.
     privacy_posture: str
 
     # ⚠️ **`ready` above is not what the word suggests, and this pair exists
-    # because that gap shipped**. `ready` means "the engine object was
+    # because that gap shipped** (ADR-039). `ready` means "the engine object was
     # constructed" — it never touches the model, so a build whose Ollama is
     # unreachable reports `ready: true`, serves the page, answers **baked**
     # questions correctly, and fails on the first real one. The runbook sends
@@ -138,7 +150,7 @@ class HealthResponse(BaseModel):
     # unable to notice the one case it exists for.
     #
     # Both paths reach it and neither announces itself: the documented
-    # runbook has the client re-ingest from a second container, and a scheduled
+    # runbook has the client re-ingest from a second container, and the Advanced
     # refresh re-ingests on a timer with no restart at all — after which this route
     # reported a corpus several refreshes old, indefinitely, with nothing wrong
     # on the surface.
@@ -225,7 +237,7 @@ def create_app(
 
         # Scheduled refresh lives inside the process the operator
         # already runs, so there is no second per-OS artifact to install on a
-        # machine where the rule is verify-never-install.
+        # machine where the rule is verify-never-install (ADR-003).
         scheduler = None
         if config.refresh.enabled:
             from stillroom.refresh import RefreshScheduler
@@ -289,7 +301,7 @@ def create_app(
 
     def require_api_key(key: str | None = Security(_API_KEY_HEADER)) -> None:
         # In `open` access mode the boundary is the network binding, not a key
-        #: the page is published on loopback, "can reach it" means
+        # (ADR-029): the page is published on loopback, "can reach it" means
         # "is at this machine", and the UI deliberately sends no `X-API-Key`.
         # Requiring one here anyway is what bounced an open-mode client to a gate
         # on their first question — the server demanded a key the page is
@@ -363,7 +375,9 @@ def create_app(
                 return f"data: {json.dumps(obj)}\n\n"
 
             try:
-                async for event in engine.astream(req.question, req.turns()):
+                async for event in engine.astream(
+                    req.question, req.turns(), use_cache=not req.fresh
+                ):
                     yield sse(event)
             except Exception as exc:  # never leave the stream half-open
                 yield sse({"type": "error", "message": str(exc)})

@@ -23,7 +23,7 @@
   "themeToLight": "Claro",
   "themeToDark": "Escuro",
   "language": "Idioma",
-  "answersLanguageNote": "O idioma da interface muda apenas esta página. As respostas voltam no idioma em que os seus documentos estão escritos — elas nunca são traduzidas automaticamente.",
+  "answersLanguageNote": "O idioma da interface muda apenas esta página. As respostas voltam no idioma para o qual este assistente foi configurado, seja qual for o idioma da sua pergunta — elas nunca são traduzidas automaticamente.",
   "keyTitle": "Chave de acesso",
   "keyBody": "Este assistente está compartilhado na sua rede, então ele pede a chave de acesso do seu arquivo de configuração. Você só precisa digitá-la uma vez neste computador.",
   "keyLabel": "Chave de acesso",
@@ -46,5 +46,9 @@
   "postureLocal": "Local — o modelo roda nesta máquina; os seus documentos nunca saem dela.",
   "postureOnPremises": "Na sua rede — o modelo roda no seu próprio hardware ({detail}); os seus documentos nunca saem do seu prédio.",
   "postureThirdParty": "Terceiros — os documentos são enviados para {detail} com a sua própria chave de API, como você pediu.",
-  "budgetLabel": "Memória da conversa: {n} de {max} trocas mantidas"
+  "budgetLabel": "Memória da conversa: {n} de {max} trocas mantidas",
+  "answerAgain": "Responder de novo",
+  "answerAgainHint": "Pergunta ao modelo outra vez, em vez de reaproveitar a resposta guardada.",
+  "staleTitle": "Os seus documentos mudaram.",
+  "staleBody": "Este assistente ainda está respondendo pela versão anterior. Feche esta janela e execute o start de novo para atualizá-lo."
 }

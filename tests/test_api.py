@@ -35,8 +35,9 @@ class StubEngine:
             served_by="model",
         )
 
-    async def astream(self, question: str, history: tuple = ()):
+    async def astream(self, question: str, history: tuple = (), *, use_cache: bool = True):
         self.seen_history = history
+        self.seen_use_cache = use_cache
         yield {"type": "sources", "citations": []}
         yield {"type": "token", "text": "30 days"}
         yield {"type": "answer", "reply": "30 days [1].", "citations": []}
@@ -74,7 +75,7 @@ def keyed_client() -> Any:
     # `key` mode: the shared-office-network deployment, where the key is the
     # boundary. The rejection tests belong here — asserting rejection in `open`
     # mode encoded the bug where open mode demanded a key it never sends
-    #.
+    # (ADR-069).
     with _client(StubEngine(), access="key") as test_client:
         yield test_client
 
@@ -114,8 +115,9 @@ def test_streaming_also_requires_a_key_in_key_mode(keyed_client: TestClient):
 
 
 def test_open_mode_answers_the_ask_route_without_a_key(client: TestClient):
-    """The default single-machine mode: the page sends no key by design, the boundary is the loopback binding, and requiring a key here
-    bounced a client to a gate on their first question. Both ask
+    """The default single-machine mode: the page sends no key by design
+    (ADR-029), the boundary is the loopback binding, and requiring a key here
+    bounced a client to a gate on their first question (ADR-069). Both ask
     routes must answer keyless in open mode."""
     assert client.post("/api/ask", json={"question": "refunds?"}).status_code == 200
     assert (
@@ -157,7 +159,7 @@ def test_an_empty_question_is_rejected_by_validation(client: TestClient):
 
 def test_a_broken_stream_ends_with_an_error_event_not_a_hang():
     class BrokenEngine(StubEngine):
-        async def astream(self, question: str):
+        async def astream(self, question: str, history: tuple = (), *, use_cache: bool = True):
             yield {"type": "sources", "citations": []}
             raise RuntimeError("ollama is not running")
 
@@ -170,3 +172,24 @@ def test_a_broken_stream_ends_with_an_error_event_not_a_hang():
 
     assert '"type": "error"' in response.text
     assert response.text.rstrip().endswith("[DONE]")
+
+
+def test_the_regenerate_flag_reaches_the_engine_as_a_cache_bypass():
+    """The UI's "answer again" control, end to end through the route.
+
+    Without this the button renders, posts, and silently returns the same
+    cached answer it was pressed to escape — which is the failure it exists to
+    fix, wearing a working-looking UI.
+    """
+    engine = StubEngine()
+    # As a context manager: the lifespan has to run or the engine is never
+    # built and every route answers 503 instead of exercising the wiring.
+    with _client(engine) as client:
+        client.post("/api/ask/stream", json={"question": "What is the refund window?"})
+        assert engine.seen_use_cache is True
+
+        client.post(
+            "/api/ask/stream",
+            json={"question": "What is the refund window?", "fresh": True},
+        )
+        assert engine.seen_use_cache is False

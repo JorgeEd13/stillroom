@@ -10,7 +10,7 @@ them (or using both) is a real decision that only a model can make.
 
 **This engine has one source of truth**, so there is no routing decision left to
 make, and carrying the loop over would inherit its costs without its
-justification. Those costs are not theoretical on a
+justification (ADR-010's general rule). Those costs are not theoretical on a
 small local model:
 
 * **Latency, multiplied.** A ReAct turn is at minimum two model calls — decide
@@ -20,10 +20,10 @@ small local model:
   needed a step cap, a wall-clock budget and a dedup tracker to contain. None of
   that machinery is needed if the retrieval is not the model's decision.
 * **Cacheability.** A fixed pipeline has one deterministic shape, so the whole
-  answer can be cached against a corpus fingerprint. A loop's shape
+  answer can be cached against a corpus fingerprint (ADR-008). A loop's shape
   varies per run.
 
-What is kept from the earlier project is the part users see: streaming, so the system
+What is kept from the showcase is the part clients see: streaming, so the system
 narrates rather than appearing frozen, and grounded citations on every answer.
 """
 
@@ -38,7 +38,12 @@ from typing import Any, AsyncIterator
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from stillroom.answers.cache import AnswerCache, answer_key, get_answer_cache
+from stillroom.answers.cache import (
+    AnswerCache,
+    CachedAnswer,
+    answer_key,
+    get_answer_cache,
+)
 from stillroom.config import ClientConfig
 from stillroom.conversation import Turn, retrieval_query, trim
 from stillroom.index.embeddings import embedding_function_for
@@ -59,9 +64,22 @@ logger = logging.getLogger(__name__)
 # regression this guards.
 _HAS_WORD_CHARACTER = re.compile(r"\w", re.UNICODE)
 
+# Trailing punctuation and case are the difference between a chip click and the
+# same question typed by hand; neither changes which question it is.
+_TRAILING = " \t\r\n?!.:;,"
+
+
+def _same_question(asked: str, cached: str) -> bool:
+    """Is this the SAME question, not merely a similar one?
+
+    Used only on the mid-conversation path, where similarity is not enough.
+    """
+    return asked.strip(_TRAILING).casefold() == cached.strip(_TRAILING).casefold()
+
+
 
 def _read_standing_context(config: ClientConfig) -> str | None:
-    """Load the client's background notes, or None.
+    """Load the client's background notes, or None (ADR-046).
 
     A missing file is a hard error rather than a shrug: the path is only in the
     config because somebody put it there, and a build that silently drops the
@@ -151,8 +169,8 @@ class Engine:
                     k=config.retrieval.k,
                     # The standing context changes answers without changing a
                     # single document, so it belongs in the key exactly as the
-                    # model and the prompt do. Editing it and leaving
-                    # the cache is the immutable-corpus failure with a different cause.
+                    # model and the prompt do (ADR-046). Editing it and leaving
+                    # the cache is the ADR-008 failure with a different cause.
                     standing_context=self._standing,
                 ),
             )
@@ -204,7 +222,7 @@ class Engine:
         return self._cache
 
     def retrieve(self, question: str, history: tuple[Turn, ...] = ()) -> Retrieval:
-        """Search, and on a refusal try the question's spelling once.
+        """Search, and on a refusal try the question's spelling once (ADR-061).
 
         ⚠️ **The order matters and it is the whole safety argument.** The
         original question is always searched first, and the retry only ever
@@ -214,8 +232,8 @@ class Engine:
         makes things worse is discarded by construction, which is what makes it
         safe to correct against a vocabulary that contains no question words.
         """
-        # ⚠️ **A REGRESSION THE SWAP CAUSED, found by re-running the troll
-        # battery**. That battery recorded *"degenerate input
+        # ⚠️ **A REGRESSION THE SWAP CAUSED, found by re-running ADR-045's troll
+        # battery** (ADR-061). That battery recorded *"degenerate input
         # short-circuited by the floor with no model call"*. Under `bge-m3` it
         # is not: measured against the English corpus, `"???"` scores **0.518**
         # and a question of pure whitespace scores **0.588** — both clear of a
@@ -227,7 +245,7 @@ class Engine:
         # score is not low.
         #
         # Refused here rather than in `search` so it costs neither the embedding
-        # call nor the model call, which is the property that battery recorded.
+        # call nor the model call, which is the property ADR-045 recorded.
         # A word character is the test, so it holds in every script — Han, Hangul
         # and Cyrillic are all `\\w`.
         if not _HAS_WORD_CHARACTER.search(question):
@@ -297,7 +315,7 @@ class Engine:
     ) -> list:
         # `relevant`, never `passages`: a chunk below the floor is unrelated
         # text, and putting it in the prompt is how a model is talked into
-        # improvising.
+        # improvising (ADR-040).
         passages = [(p.label(), p.text) for p in retrieval.relevant]
         return [
             SystemMessage(content=system_prompt(self.config.language)),
@@ -307,6 +325,67 @@ class Engine:
                 )
             ),
         ]
+
+    def _servable_hit(
+        self, question: str, history: tuple[Turn, ...]
+    ) -> CachedAnswer | None:
+        """The cache entry that may be served for `question`, or None.
+
+        ⚠️ **ADR-046 switched the cache off entirely whenever history was
+        present, and asserted the prepared answers were unaffected
+        because "a curated question is asked fresh". Measured on real Windows
+        2026-07-29, that sentence is false in the shipped UI.** The browser
+        holds the conversation (ADR-046 itself) and sends it with every request
+        after the first, so the SECOND curated question of a chat — clicked
+        straight off the instant chips — was answered by the live model. Right
+        answer, full latency, no INSTANT badge, and nothing logged. Seventh
+        instance of verifying one layer short: every test called `ask()` with
+        no history, which is the one case the browser never produces.
+
+        **ADR-046's reasoning stands for what it actually guards.** A
+        follow-up's text does not identify it — "how long does it take?" means
+        one thing after refunds and another after shipping — so reading the
+        shared cache with it would serve the wrong conversation's answer, and
+        writing to it would store that ambiguity for everybody else.
+
+        A **curated** question is the case that reasoning does not reach. Its
+        text is self-identifying by construction: somebody wrote it down as a
+        question with one intended answer, and that answer was reviewed before
+        delivery. So with history the cache may still be read, and **only a
+        curated entry may be served**. Warmed entries stay unreachable — those
+        were captured from some other turn and carry exactly the ambiguity
+        ADR-046 names.
+
+        This is the whole rule, in one place, because both `ask` and `astream`
+        need it and a rule duplicated across those two paths is a rule that
+        will be fixed in one of them.
+
+        ⚠️ It narrows the unprotected region; it does not close it. A genuine
+        follow-up still goes to the live model, at whatever class the client's
+        hardware allows — which is where the 1.5b restocking-fee error came
+        from. Nothing here would have caught that.
+        """
+        if self._cache is None:
+            return None
+        hit = self._cache.lookup(question)
+        if hit is None:
+            return None
+        if not history:
+            return hit
+        # Mid-conversation the bar is higher than `curated`, because `lookup`
+        # is a SIMILARITY match at `answer_cache.threshold` (0.90 by default),
+        # not an equality one. "Curated text is self-identifying" justifies
+        # serving the curated *question*; it does not justify serving it to
+        # something merely near it. Without this, a contextual question that
+        # drifts close enough — "what is the refund window for it?" after two
+        # turns about one product — would be answered with the general policy
+        # baked at build time, ignoring the context the user is relying on.
+        # Raised after Jorge asked whether this fights conversation continuity.
+        # The instant chips send the curated text verbatim, so the path the
+        # product actually relies on is unaffected.
+        if not hit.curated or not _same_question(question, hit.question):
+            return None
+        return hit
 
     def ask(
         self,
@@ -318,21 +397,8 @@ class Engine:
         """Answer a question. The synchronous path, used by the CLI and tests."""
         history = self._history(history)
 
-        # ⚠️ **A conversation turn is never cached, in either direction**
-        #. The cache is keyed on the question text alone, and a
-        # follow-up's text does not identify it: "how long does it take?" means
-        # one thing after a question about refunds and another after one about
-        # shipping. Reading the cache would serve the wrong conversation's
-        # answer; writing to it would store that ambiguity for everybody else,
-        # in a cache that is shared and outlives the session.
-        #
-        # The instant answers are unaffected: a curated question
-        # is asked fresh, which is exactly the case this still covers.
-        if history:
-            use_cache = False
-
-        if use_cache and self._cache is not None:
-            hit = self._cache.lookup(question)
+        if use_cache:
+            hit = self._servable_hit(question, history)
             if hit is not None:
                 return Answer(
                     text=hit.answer,
@@ -364,34 +430,45 @@ class Engine:
                 text=no_answer(self.config.language), citations=[], served_by="no-match"
             )
 
-        if use_cache and self._cache is not None:
+        # Writing is unchanged and stays off with history — the half of ADR-046
+        # that protects everybody else's cache from this session's ambiguity.
+        if use_cache and not history and self._cache is not None:
             self._cache.warm(question, text, citations)
 
         return Answer(text=text, citations=citations, served_by="model")
 
     async def astream(
-        self, question: str, history: tuple[Turn, ...] = ()
+        self,
+        question: str,
+        history: tuple[Turn, ...] = (),
+        *,
+        use_cache: bool = True,
     ) -> AsyncIterator[dict]:
         """Stream one answer as events, so the UI can show it working.
 
         A local model is slow, and a silent wait reads as a hang. The event
         stream is what turns that wait into visible progress — the same contract
-        the earlier project's UI consumes: `cached` / `sources` / `token` / `answer` /
+        the showcase's UI consumes: `cached` / `sources` / `token` / `answer` /
         `error`, then the caller closes the stream.
         """
         history = self._history(history)
+        # Looked up even when the cache is being BYPASSED, because "may I
+        # overwrite this" is a different question from "may I serve this".
+        _existing = self._cache.lookup(question) if self._cache is not None else None
+        _hit_was_curated = bool(_existing and _existing.curated)
         try:
-            # Same rule as `ask`, and for the same reason.
-            if not history and self._cache is not None:
-                hit = self._cache.lookup(question)
-                if hit is not None:
-                    yield {
-                        "type": "cached",
-                        "curated": hit.curated,
-                        "reply": hit.answer,
-                        "citations": hit.citations,
-                    }
-                    return
+            # Same rule as `ask`, from the same function — this is the path the
+            # browser actually takes, and it is the one the 2026-07-29 defect
+            # was observed on.
+            hit = self._servable_hit(question, history) if use_cache else None
+            if hit is not None:
+                yield {
+                    "type": "cached",
+                    "curated": hit.curated,
+                    "reply": hit.answer,
+                    "citations": hit.citations,
+                }
+                return
 
             retrieval = self.retrieve(question, history)
             if not retrieval.grounded:
@@ -427,7 +504,16 @@ class Engine:
                 }
                 return
 
-            if not history and self._cache is not None:
+            # !! A regenerate REPLACES the warmed entry rather than skipping
+            # the write. The whole reason to offer the button is that a wrong
+            # answer got cached and is now served instantly forever; leaving
+            # the old entry would fix this user's screen and nobody else's.
+            # `warm` is idempotent by question text, so this overwrites.
+            #
+            # It must NEVER overwrite a curated entry: those were reviewed
+            # before delivery, and regenerating over one would replace verified
+            # text with live model output that keeps wearing the INSTANT badge.
+            if not history and self._cache is not None and not _hit_was_curated:
                 self._cache.warm(question, text, citations)
 
             yield {"type": "answer", "reply": text, "citations": citations}
@@ -475,10 +561,10 @@ class Engine:
 #
 #   "…within 14 days … [2] and [1a6234b4]."
 #
-# `1a6234b4` is the per-request fence nonce from `build_user_prompt`:
+# `1a6234b4` is the per-request fence nonce from `build_user_prompt` (ADR-045):
 # the injection defence, printed twice per passage next to the number the model
 # is told to cite, and duly cited. It resolves to nothing in the sources shown
-# underneath — on a product whose whole point is *every answer shows its sources*.
+# underneath — on a product sold on *every answer shows its sources*.
 #
 # The same gap let an answer be the single string `"[1]"`: five citations
 # attached, no sentence, rendered as if it were an answer.

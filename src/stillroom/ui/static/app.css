@@ -73,6 +73,32 @@ body {
 /* --------------------------------------------------------------- header --- */
 
 .header {
+  /*
+    Sticky, because the conversation grows underneath it and the controls must
+    not travel with it. Two things live up here that a user needs mid-chat:
+    `New chat`, and the conversation budget — which is the one element whose
+    whole job is to be SEEN filling up (ADR-047). Before this, reaching either
+    meant scrolling back over a long conversation, and the meter that warns you
+    to start a new chat was invisible exactly when it mattered. Reported from
+    the 2026-07-29 Windows run.
+
+    Same idiom as `.composer`, which is sticky to the bottom for the mirror
+    reason, and the gradient tail matches it so the two edges of the page read
+    as one system.
+
+    No z-index war with the access gate: `.app` and `.gate` are mutually
+    exclusive — app.js shows one and hides the other — so they are never
+    stacked. The `1` is only to win against the chat, which follows in the DOM.
+  */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  /* Absorb `.app`'s own padding, so no strip of scrolling conversation shows
+     through between the viewport edge and the header. */
+  margin: calc(-1 * var(--gap)) calc(-1 * var(--gap)) 0;
+  padding: var(--gap) var(--gap) 0.5rem;
+  background: linear-gradient(to bottom, var(--bg) 72%, transparent);
+
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -504,6 +530,67 @@ body {
   transform: none;
 }
 
+/* ------------------------------------------------------- staleness ------- */
+
+/*
+  The "your documents changed" banner. Sits directly under the header, which is
+  sticky — so on a long conversation the warning travels with the controls
+  instead of being stranded at the top where nobody scrolls back to.
+
+  ⚠️ Built on `--accent`, NOT on `--error`, and NOT on a new token.
+
+  The first draft used `var(--warn)`, which does not exist — `render_theme_css`
+  emits 24 variables and that is not one of them. An undefined variable makes
+  the whole `color-mix()` invalid, so the declaration is dropped and the banner
+  renders with no border and no background: a defect invisible to anything that
+  reads the DOM. Golden rule 12 forbids literal colour; inventing a token is
+  the same mistake wearing a variable's clothes.
+
+  `--error` exists and was rejected on meaning. The assistant is NOT broken —
+  it is answering correctly, from a corpus older than what is on disk. Painting
+  that as a failure sends a client hunting for a fault instead of running start
+  again.
+*/
+.alert {
+  margin: 0;
+  padding: var(--pad);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  color: var(--text);
+  font-size: 0.94em;
+}
+
+/* --------------------------------------------------------- answer again --- */
+
+.again {
+  margin-top: 0.6rem;
+}
+
+/*
+  Deliberately quiet: a secondary control, not a call to action. It exists for
+  the moment somebody distrusts an answer, and a prominent button would invite
+  re-rolling answers that were right — which costs the client time on the
+  slowest path they have, and where instant answers are the point it would teach
+  exactly the wrong habit.
+*/
+.again-button {
+  font: inherit;
+  font-size: 0.88em;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+}
+
+.again-button:hover,
+.again-button:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
 /* ------------------------------------------------- access gate & sheets --- */
 
 .gate {
@@ -612,9 +699,9 @@ body {
 }
 
 /*
-  The conversation budget, shown rather than announced.
+  The conversation budget, shown rather than announced (ADR-047).
 
-  A deliberate choice, and the reasoning is sound: the limit is real and the user
+  Jorge's brief, and the reasoning is sound: the limit is real and the user
   should feel it approaching, but SAYING so costs a sentence in the interface
   and — if it were said by the model — tokens in every single request, on the
   hardware that can least afford them. A meter is free and pre-attentive.

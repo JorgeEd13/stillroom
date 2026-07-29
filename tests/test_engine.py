@@ -1,7 +1,7 @@
 """The engine: grounding, citations, caching, and the invalidation boundary.
 
 `test_a_reingest_invalidates_a_cached_answer` is the most important test in this
-repo. The immutable-corpus rule permits caching whole answers only because a re-ingest busts them;
+repo. ADR-008 permits caching whole answers only because a re-ingest busts them;
 if that stops being true, the product confidently serves answers from documents
 the client has already changed.
 """
@@ -92,7 +92,7 @@ def test_no_cache_forces_a_live_call(engine, fake_model):
 
 
 def test_a_reingest_invalidates_a_cached_answer(config, embedding, fake_model):
-    """The immutable-corpus honesty boundary. If this breaks, the product lies."""
+    """The ADR-008 honesty boundary. If this breaks, the product lies."""
     ingest(config, embedding_function=embedding, embedding_name="test")
     engine = Engine(config, chat_model=fake_model, embedding_function=embedding)
     engine.ask("What is the refund window?")
@@ -182,7 +182,7 @@ def test_a_model_failure_surfaces_as_an_error_event(config, embedding):
     events = drain(engine.astream("What is the refund window?"))
 
     # It fails loudly and locally. There is nowhere for it to fall back to,
-    # which is the no-cloud-fallback guarantee behaving as designed.
+    # which is the ADR-009 guarantee behaving as designed.
     assert events[-1]["type"] == "error"
     assert "ollama" in events[-1]["message"]
 
@@ -191,7 +191,7 @@ def test_answers_carry_no_citations_when_nothing_matched(engine):
     assert Answer(text=NO_ANSWER).citations == []
 
 
-# ------------------------------------------- the relevance floor ---
+# ------------------------------------------- the relevance floor (ADR-040) ---
 #
 # The floor used to decide only *whether* to call the model. Everything Chroma
 # returned then went into the prompt and out to the client as a source — found
@@ -242,3 +242,117 @@ def test_a_refusal_still_cites_nothing_at_all(config, embedding, fake_model):
 
     assert answer.served_by == "no-match"
     assert answer.citations == []
+
+
+# --------------------------------------------------------------------------
+# The conversation boundary of the answer cache (ADR-046, amended 2026-07-29).
+#
+# ⚠️ Every cache test above this line calls `ask()` with NO history — which is
+# the one case the browser never produces after the first question. That gap is
+# how a curated question clicked second was answered by the live model on real
+# Windows while this suite stayed green. Each test below fails if the amendment
+# is reverted; they were written by breaking it deliberately and watching them.
+# --------------------------------------------------------------------------
+
+
+def _turn(question: str = "What is the refund window?", answer: str = "30 days."):
+    from stillroom.conversation import Turn
+
+    return (Turn(question=question, answer=answer),)
+
+
+def test_a_curated_question_is_still_instant_mid_conversation(engine, fake_model):
+    """The defect measured on `dgp-05`, 2026-07-29.
+
+    The product promises N *instant* answers and the UI renders them as one-click
+    chips, so clicking a second one is the designed interaction — not an edge
+    case. Before the amendment this returned `served_by="model"`.
+    """
+    engine.bake_curated()
+    calls_after_bake = len(fake_model.calls)
+
+    answer = engine.ask("What is the refund window?", history=_turn())
+
+    assert answer.served_by == "cache"
+    assert answer.curated is True
+    # The point is not only the badge: no model call means no latency and no
+    # chance for a small model to be confidently wrong.
+    assert len(fake_model.calls) == calls_after_bake
+
+
+def test_a_curated_question_is_instant_mid_conversation_when_STREAMED(engine):
+    """The same assertion on the path the browser actually takes.
+
+    `ask()` is the CLI and the tests; `astream()` is the client. Fixing one and
+    not the other is this project's recurring defect, so the rule lives in one
+    function and this test is what keeps it there.
+    """
+    engine.bake_curated()
+
+    events = drain(engine.astream("What is the refund window?", history=_turn()))
+
+    assert [e["type"] for e in events] == ["cached"]
+    assert events[0]["curated"] is True
+
+
+def test_a_WARMED_answer_is_NOT_served_mid_conversation(engine, fake_model):
+    """ADR-046's actual guarantee, which the amendment must not weaken.
+
+    A warmed entry was captured from somebody else's turn, so its text carries
+    exactly the ambiguity ADR-046 names — "how long does it take?" means one
+    thing after refunds and another after shipping. Only *curated* text is
+    self-identifying, because a human wrote it down as having one answer.
+    """
+    engine.ask("What is the refund window?")  # warms, not curated
+    assert engine.ask("What is the refund window?").served_by == "cache"
+    calls_before = len(fake_model.calls)
+
+    answer = engine.ask("What is the refund window?", history=_turn())
+
+    assert answer.served_by == "model"
+    assert len(fake_model.calls) == calls_before + 1
+
+
+def test_a_conversation_turn_is_never_WRITTEN_to_the_shared_cache(engine):
+    """The half of ADR-046 that protects every other session. Unchanged."""
+    before = engine.cache.count()
+
+    engine.ask("What is the refund window?", history=_turn())
+
+    assert engine.cache.count() == before
+
+
+def test_a_question_merely_SIMILAR_to_a_curated_one_is_live_mid_conversation(
+    config, embedding, fake_model
+):
+    """Similarity justifies a cache hit alone; it does not justify one in context.
+
+    `lookup` matches at `answer_cache.threshold`, so mid-conversation a
+    contextual question that drifts near a curated one would otherwise be
+    answered with the build-time answer — ignoring the context the user is
+    relying on. The curated text itself still hits (the chips send it verbatim).
+
+    ⚠️ **The threshold is opened to 0.0 on purpose, and that is the point of the
+    test.** The first version of it asked about a "Premium Kit" against the
+    default threshold — which the fixture embedding scores as a MISS, so
+    `lookup` returned None and the test passed with the guard deleted. It proved
+    only that the fixture misses. Mutation caught it. With the similarity gate
+    wide open, the exact-match guard is the only thing left standing, so
+    removing it MUST turn this red.
+    """
+    config.answer_cache.threshold = 0.0
+    ingest(config, embedding_function=embedding, embedding_name="test")
+    engine = Engine(config, chat_model=fake_model, embedding_function=embedding)
+    engine.bake_curated()
+
+    answer = engine.ask("Something else entirely about tungsten", history=_turn())
+
+    assert answer.served_by != "cache"
+    assert answer.curated is False
+
+
+def test_the_curated_question_still_hits_despite_typing_variations(engine):
+    """A chip sends it verbatim; a person types it with different punctuation."""
+    engine.bake_curated()
+
+    assert engine.ask("what is the refund window", history=_turn()).curated is True

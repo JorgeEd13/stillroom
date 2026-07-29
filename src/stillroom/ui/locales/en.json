@@ -23,7 +23,7 @@
   "themeToLight": "Light",
   "themeToDark": "Dark",
   "language": "Language",
-  "answersLanguageNote": "The interface language changes this page only. Answers come back in the language your documents are written in — they are never machine-translated.",
+  "answersLanguageNote": "The interface language changes this page only. Answers come back in the language this assistant was set up for, whatever language you ask in — they are never machine-translated.",
   "keyTitle": "Access key",
   "keyBody": "This assistant is shared on your network, so it asks for the access key from your configuration file. You only need to enter it once on this computer.",
   "keyLabel": "Access key",
@@ -46,5 +46,9 @@
   "postureLocal": "Local — the model runs on this machine; your documents never leave it.",
   "postureOnPremises": "On your network — the model runs on your own hardware ({detail}); your documents never leave your building.",
   "postureThirdParty": "Third-party — documents are sent to {detail} with your own API key, as you asked for.",
-  "budgetLabel": "Conversation memory: {n} of {max} exchanges kept"
+  "budgetLabel": "Conversation memory: {n} of {max} exchanges kept",
+  "answerAgain": "Answer again",
+  "answerAgainHint": "Ask the model again instead of reusing the stored answer.",
+  "staleTitle": "Your documents have changed.",
+  "staleBody": "This assistant is still answering from the previous version. Close this window and run start again to bring it up to date."
 }
