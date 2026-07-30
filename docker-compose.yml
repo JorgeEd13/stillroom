@@ -2,7 +2,7 @@
 #
 # ⚠️ LANDMINE 4 — `environment:` SILENTLY OVERRIDES `.env`.
 #
-# On an earlier project, a provider set in `.env` was ignored because an
+# On the showcase, a provider set in `.env` was ignored because an
 # `environment:` block hard-set it, and the resulting placeholder key produced
 # 500s that looked like an application bug. The root `.env` file only does
 # `${VAR}` substitution in this file — it is NOT injected into the container
@@ -25,7 +25,7 @@
 x-model-address: &model-address
   OLLAMA_HOST: http://host.docker.internal:11434
 
-# ⚠️ **The embedding model is a SECOND prerequisite as of the move to bge-m3**, and the
+# ⚠️ **The embedding model is a SECOND prerequisite as of ADR-059**, and the
 # client has no reason to know it exists — the runbook told them to pull the
 # chat model. It is anchored here for the same reason the address is: the probe
 # below must ask about the model the engine will actually use, and a probe that
@@ -43,22 +43,54 @@ services:
     build:
       context: .
       target: client
-      # ⚠️ Without this, the client's FIRST `start` fails with a Python
-      # traceback. Compose builds the image when it is missing, and the build
-      # runs `bake` — which needs the model, which is on the host. A default
-      # bridge network cannot reach it, so the build dies with
-      # `httpx.ConnectError: [Errno 111] Connection refused` in front of the
-      # client. This is the compose-file half of the `--network host` note in
-      # the Dockerfile; the two must not drift apart.
+      # ⚠️ THE BUILD REACHES OLLAMA THE SAME WAY EVERYTHING ELSE DOES, and this
+      # is the second attempt at that — the first one worked on Linux only.
       #
-      # Found 2026-07-21 by running `docker compose up -d` on a clean delivery
-      # folder. The manual build documented in the Dockerfile had always passed
-      # `--network host`, so nothing revealed that compose did not.
-      network: host
+      # The build runs `ingest` and `bake`, both of which need the model on the
+      # host. Getting there was `network: host`, added 2026-07-21 after a
+      # `docker compose up -d` on a clean delivery folder died with
+      # `Connection refused` in front of the client.
+      #
+      # ⛔ `network: host` fixed Linux and CANNOT work on Windows (F5.9,
+      # 2026-07-27, on real hardware). It works by making `localhost` inside the
+      # build mean the host — an equivalence that only holds where the daemon
+      # and the host are the same machine. On Docker Desktop the build runs
+      # inside the WSL2 VM, so `localhost` is the VM, and the client's Ollama is
+      # a Windows application outside it. The build died on the client's first
+      # double-click with `[Errno 111] Connection refused` at
+      # `http://localhost:11434`, exactly the traceback the old comment above
+      # was written to prevent.
+      #
+      # ⚠️ And the preflight said it was fine — because the preflight probes are
+      # compose SERVICES, which carry `OLLAMA_HOST` and `extra_hosts` below, and
+      # the build inherited neither. A green check on a path the failing step
+      # does not take is the recurring defect in this product, and this is its
+      # sixth instance.
+      #
+      # So: `host.docker.internal` here too, resolved the same way, spelled the
+      # same way, on both platforms. It costs Linux one thing worth stating —
+      # the build now needs Ollama listening beyond loopback, where
+      # `network: host` let it get away with 127.0.0.1. That is not a new
+      # requirement, it is the SAME one the running service already has; the
+      # build and the runtime now succeed and fail together instead of
+      # separately.
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
 
       args:
+        # ⚠️ THE ANCHOR, MERGED — never a second copy of the literal.
+        #
+        # Written out as `OLLAMA_HOST: http://host.docker.internal:11434` first,
+        # and `test_the_probe_and_the_assistant_share_ONE_model_address` failed
+        # on the spot: it counts the literal and requires exactly one. The guard
+        # is right and the reasoning is the same one that applies to the probe —
+        # `ingest` bakes vectors and `bake` bakes whole answers, so a build that
+        # talked to a different Ollama than the runtime would produce an index
+        # and a cache for a model that never serves, and nothing would say so.
+        <<: *model-address
+
         # ⚠️ **No value, and the missing colon-dash is the whole point** — this
-        # is `BASE_IMAGE:` with nothing after it, not `${VAR:-}`.
+        # is `BASE_IMAGE:` with nothing after it, not `${VAR:-}` (ADR-058).
         #
         # The default lives in exactly one place, `ARG BASE_IMAGE` at the top of
         # the Dockerfile, because a version repeated in two files is a version
@@ -148,7 +180,7 @@ services:
   # launcher runs it explicitly with `docker compose run --rm probe`.
   #
   # ⛔ **THIS SERVICE EXISTS BECAUSE THE PROBE WAS ON THE WRONG NETWORK**
-  #. The launcher used to run `docker run --rm busybox …` with no
+  # (ADR-060). The launcher used to run `docker run --rm busybox …` with no
   # network specified, which lands on the **default** bridge — a different
   # network from the one Compose builds for this project, with a different
   # subnet and a different bridge interface on the host.
@@ -175,7 +207,7 @@ services:
 
   # ------------------------------------------------------------------------
   # ⚠️ **The second probe, and it exists because `ingest` gained a dependency**
-  #. Reaching Ollama is no longer enough to know the build will work:
+  # (ADR-059). Reaching Ollama is no longer enough to know the build will work:
   # reading the client's documents now needs `bge-m3` specifically, and a client
   # who followed the runbook has pulled only the chat model. Without this, their
   # first double-click reaches "Preparing the assistant…" and then dies inside

@@ -6,7 +6,7 @@
 # read by somebody who did not choose to be looking at a terminal, and who will
 # forward whatever appears here to me if it goes wrong. So it explains rather
 # than reports: no stack traces, no exit codes, no jargon — and it never tries
-# to fix anything on their machine (verify never install).
+# to fix anything on their machine (ADR-003, verify never install).
 
 set -u
 
@@ -63,7 +63,7 @@ fi
 # On Linux, `host.docker.internal` is the docker0 bridge and Ollama binds
 # `127.0.0.1` by default, so the host check passes, the launcher says
 # "Starting…", and the assistant can never answer a single live question. That
-# is "reasoning about the wrong computer", in the launcher.
+# is ADR-039's "reasoning about the wrong computer", in the launcher.
 #
 # The container this probe runs in is the same kind the assistant runs in, so a
 # pass here means the assistant can genuinely reach the model. No Python, no
@@ -72,10 +72,10 @@ fi
 # ⚠️ **Ask Compose where the model actually is; do not assume.** An earlier
 # version hardcoded `host.docker.internal`, which is right for the ordinary
 # deployment and wrong for every other one — the on-premises engagement points
-# at a GPU box elsewhere on the client's network, and a rehearsal
+# at a GPU box elsewhere on the client's network (ADR-023), and a rehearsal
 # points at a container. Hardcoding made the launcher refuse to start a build
 # that was perfectly healthy.
-# ⛔ **AND THE PROBE ITSELF WAS ON THE WRONG NETWORK** (and it is the
+# ⛔ **AND THE PROBE ITSELF WAS ON THE WRONG NETWORK** (ADR-060, and it is the
 # same defect one level deeper).
 #
 # The previous version ran `docker run --rm busybox …` with no network, which
@@ -94,7 +94,7 @@ fi
 #
 # It also removes the old carve-out. The previous probe could not resolve a name
 # that exists only on the assistant's network, so it skipped the on-premises
-# GPU-box engagement entirely and checked nothing. On the project
+# GPU-box engagement entirely (ADR-023) and checked nothing. On the project
 # network that name resolves, so **every deployment is now actually checked.**
 say "Checking the AI model is reachable…"
 OLLAMA_URL="$(docker compose config 2>/dev/null \
@@ -151,7 +151,7 @@ if ! docker compose run --rm probe >/dev/null 2>&1; then
 fi
 
 # --- 2a. The SECOND model, which the client has no reason to know about ---
-# ⚠️ **New with the move to bge-m3, and it is the likeliest first-run failure of any
+# ⚠️ **New with ADR-059, and it is the likeliest first-run failure of any
 # delivery after it.**
 #
 # Reading the client's documents used to need nothing but the image; it now
@@ -159,7 +159,7 @@ fi
 # writes the answers, so a client who did exactly what they were told still
 # fails — inside the build, several minutes in, on a name they have never seen.
 #
-# Probed as a compose service for the same reason as the check above:
+# Probed as a compose service for the same reason as the check above (ADR-060):
 # same network, same address, same anchor. And it asks for an EMBEDDING rather
 # than for the tag list, because a tag proves the weights are on disk and only
 # an embedding proves the server can load them.
@@ -213,12 +213,12 @@ fi
 # ⚠️ **This has to come before anything that builds** — including the document
 # check below, which runs `docker compose run` and will happily build the image
 # first. Loading it here is what makes the client's first build touch nothing but
-# their own Ollama.
+# their own Ollama (ADR-058).
 #
 # Without it the build downloads ~90 libraries from PyPI. That is a chance to
 # fail on a corporate proxy, a TLS-inspecting firewall, or a bad afternoon at a
 # CDN. It used to also download an embedding model from a bucket in another
-# company's cloud — which was the step OBSERVED failing here, and which the embedder swap
+# company's cloud — which was the step OBSERVED failing here, and which ADR-059
 # removed entirely by moving the embedder onto the client's own Ollama.
 # ⚠️ `BASE_TAG`, not `BASE_IMAGE`. `BASE_IMAGE` is the name Compose reads from
 # the environment for the build argument of the same name, and setting it here
@@ -277,9 +277,50 @@ if docker compose ps --status running --quiet assistant 2>/dev/null | grep -q .;
   docker compose stop assistant >/dev/null 2>&1
 fi
 
+# ⚠️ BUILD EXPLICITLY, AND BEFORE THE REFRESH — the Linux twin of the same fix
+# in `start.cmd` (F5.9, 2026-07-27). `docker compose run` builds the image when
+# it is missing, so a BUILD failure arrived wearing the refresh step's error
+# message, which blames the client's DOCUMENTS. Found on Windows, where the
+# build could not reach Ollama; present identically here, and it survived on
+# this side for the usual reason — the machine that tested it could always
+# reach its own model.
+#
+# It also makes the refresh message below true: that message says the assistant
+# "will keep answering from the documents it already knew", which was false on a
+# first run. Refresh is now only reachable after a successful build.
+say "Preparing your assistant — this can take several minutes the first time…"
+docker compose build assistant 2>&1 | sed 's/^/    /'
+if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+  say ""
+  say "The assistant could not be prepared. Your documents were not touched"
+  say "and nothing on this machine has been changed."
+  say ""
+  say "If the lines above mention a connection being refused, then Ollama is"
+  say "running but this build cannot reach it. That is a setting on this"
+  say "machine, not a fault in your documents and not something you did wrong."
+  say ""
+  say "Send me this screen and I will tell you the exact change to make."
+  say ""
+  read -r -p "Press Enter to close." _ || true
+  exit 1
+fi
+
+# ⛔ `${PIPESTATUS[0]}`, not `if ! … | sed`, and this one was ALREADY BROKEN.
+#
+# Without `set -o pipefail`, a pipeline's status is the LAST command's — `sed`,
+# which always exits 0. So `if ! docker compose run … | sed` tested sed. This
+# branch has never been reachable on Linux: a failing `refresh` was reported as
+# a success and the script carried on to `docker compose up -d`.
+#
+# Found 2026-07-27 while adding the build step above, by nearly writing it the
+# same way. `start.cmd` checks `errorlevel 1` and has always been correct, so
+# this is the launcher pair disagreeing again — and it survived because the one
+# machine that ran `start.sh` end to end could always reach its own model, so
+# `refresh` never failed on it.
 say "Checking your documents…"
-if ! docker compose run --rm --no-deps assistant \
-     stillroom refresh --config client.toml 2>&1 | sed 's/^/    /'; then
+docker compose run --rm --no-deps assistant \
+     stillroom refresh --config client.toml 2>&1 | sed 's/^/    /'
+if [ "${PIPESTATUS[0]}" -ne 0 ]; then
   say ""
   say "Your documents could not be read. The assistant has NOT been changed —"
   say "it will keep answering from the documents it already knew."

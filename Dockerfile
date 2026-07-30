@@ -1,10 +1,10 @@
 # The client's deliverable.
 #
 # Four things here exist because they already went wrong once — three on the
-# an earlier project, one on this product. Each is
+# showcase (`sistema/achados/receivables-agent.md`), one on this product. Each is
 # marked ⚠️ — do not "simplify" one without reading the note.
 
-# ⚠️ LANDMINE 5 — the client's build must not need the internet.
+# ⚠️ LANDMINE 5 — the client's build must not need the internet (ADR-058).
 #
 # The build failed once, here, on the embedding-model download from Chroma's S3.
 # On a client machine that is `docker compose up` dying with a Python traceback
@@ -17,7 +17,7 @@
 #   `base`   — client-independent. Built HERE, handed over as a `docker load`-able
 #              tarball, and therefore NEVER built on the client's machine.
 #   `client` — their config and their documents. Needs nothing but their own
-#              Ollama, which is a stated prerequisite.
+#              Ollama, which is a stated prerequisite (ADR-003).
 #
 # `BASE_IMAGE` names the loaded image by default. Pass `--build-arg
 # BASE_IMAGE=base` to build the base stage inline instead — the fallback for a
@@ -38,7 +38,7 @@ FROM python:3.12-slim AS base
 
 # ⚠️ LANDMINE 1 — the embedding model must be downloaded AS THE RUNTIME USER.
 #
-# On an earlier deployment, the build downloaded the ONNX MiniLM as root while
+# On the showcase's Space, the build downloaded the ONNX MiniLM as root while
 # the container ran as a non-root user. The model was therefore missing from
 # that user's cache at runtime, so it re-downloaded on first request, arrived
 # TRUNCATED, and the app crash-looped with:
@@ -59,7 +59,7 @@ ENV PATH="/home/app/.local/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1
 
 # ⚠️ `pyproject.toml` and NOTHING ELSE, so this image is a pure function of the
-# dependency declaration — which is what makes the tag honest (the tarball says the
+# dependency declaration — which is what makes the tag honest (ADR-058 says the
 # tag tracks the dependency set, not the engine).
 #
 # `README.md` used to be copied here too, out of habit. `pyproject.toml` declares
@@ -68,13 +68,13 @@ ENV PATH="/home/app/.local/bin:${PATH}" \
 # version unchanged. Found by the Fluxo L deploy-target check, not by a failure.
 COPY --chown=app:app pyproject.toml ./
 
-# ⚠️ **No engine source in the base image, and the placeholder is why**.
+# ⚠️ **No engine source in the base image, and the placeholder is why** (ADR-058).
 #
 # The obvious version of this stage copies `src/` and installs it, because that
 # is how the dependency closure gets resolved. It also puts a frozen copy of our
 # tree inside a layer of a tarball we hand over — and a later layer overwriting
 # it does not remove it, exactly as a later commit does not remove what an
-# earlier one published. That is the shape of an ignore-pattern leak,
+# earlier one published. That is the shape of the 2026-07-13 leak and of ADR-054,
 # and it is cheap to avoid: resolve the dependencies against an EMPTY package of
 # the same name.
 #
@@ -89,7 +89,7 @@ RUN mkdir -p src/stillroom && touch src/stillroom/__init__.py
 RUN pip install --no-cache-dir --user "setuptools>=68" wheel \
  && pip install --no-cache-dir --user ".[ollama,docs]"
 
-# ⚠️ **LANDMINE 1 IS DEAD, and the step that used to be here is GONE**.
+# ⚠️ **LANDMINE 1 IS DEAD, and the step that used to be here is GONE** (ADR-059).
 #
 # This is where the ONNX MiniLM was downloaded from Chroma's S3 and warmed into
 # `app`'s cache. `bge-m3` is served by the client's own Ollama, so there is no
@@ -100,7 +100,7 @@ RUN pip install --no-cache-dir --user "setuptools>=68" wheel \
 #      observed failing mid-session, and it is the reason the base ships as a
 #      tarball. The tarball is still right — PyPI is still an exposure — but the
 #      worst of the four failure modes has been removed rather than routed around.
-#   2. **We are no longer redistributing model weights.**
+#   2. **We are no longer redistributing model weights** (ADR-058 partly un-done).
 #      `bom.py` and `notices.py` say so; if this line ever comes back, they have
 #      to change back with it, in the same commit.
 #   3. **The image is smaller by the size of the model.**
@@ -128,7 +128,7 @@ FROM ${BASE_IMAGE} AS client
 # The base carries the dependency closure against an empty package of this name;
 # this install replaces it with the real one, from the delivery folder. So the
 # code that RUNS is provably the code the client can read — which is the whole
-# point of a source-available licence: an auditor reading `src/`
+# point of a source-available licence (ADR-026/034): an auditor reading `src/`
 # beside this file is reading what answers their questions.
 # `--no-deps --no-build-isolation` keeps it offline; nothing is resolved and
 # nothing is fetched.
@@ -162,33 +162,49 @@ LABEL org.opencontainers.image.title="stillroom" \
 
 # ⚠️ LANDMINE 2 — BAKE, do not warm at startup.
 #
-# An earlier project seeds its curated cache at BUILD time, which is why its headline
+# The showcase seeds its curated cache at BUILD time, which is why its headline
 # questions answer in ~1.4 s from the very first request after every deploy. If
 # this ran at startup instead, the client's first session would be the slow one
 # — the worst possible first impression, on the exact feature the product
 # rests on. `bake` also exits non-zero when a curated question cannot be answered
-#, so a corpus that does not answer the client's own questions fails
+# (ADR-020), so a corpus that does not answer the client's own questions fails
 # the BUILD rather than being discovered at handover.
 #
-# ⚠️ THEREFORE THIS BUILD NEEDS OLLAMA REACHABLE — and since the embedder swap it is the
+# ⚠️ THEREFORE THIS BUILD NEEDS OLLAMA REACHABLE — and after ADR-058 it is the
 # ONLY thing this build needs. Build it with:
 #
 #     docker build --network host --target client -t stillroom-<client> .
 #
-# This differs from that project and the difference is intrinsic, not an
-# oversight: it seeds curated *plans* — hand-written SQL that needs no
-# model — whereas this bakes whole *answers*, and an answer requires
+# This differs from the showcase and the difference is intrinsic, not an
+# oversight: the showcase seeds curated *plans* — hand-written SQL that needs no
+# model — whereas this bakes whole *answers* (ADR-008), and an answer requires
 # the model that will serve it. Verified: build reaches the host's Ollama over
 # `--network host`, and a fresh container then answers a curated question in
 # **218 ms on its very first request**.
 #
-# ⚠️ **BOTH lines below now need Ollama, and until the move to bge-m3 only the second did.**
+# ⚠️ **BOTH lines below now need Ollama, and until ADR-059 only the second did.**
 # `ingest` used to embed with an ONNX model inside this image, so it could not
 # fail for network reasons; it now calls `bge-m3` on the client's Ollama. The
 # practical consequence is that the build fails EARLIER and for a different
 # reason than it used to, and the failure names a model the client has probably
 # not pulled — which is why both launcher preflights check the embedding model
 # by name rather than checking that "Ollama is up".
+# ⚠️ The address of the client's Ollama, DURING THE BUILD (F5.9, 2026-07-27).
+#
+# `effective_base_url()` resolves config → `OLLAMA_HOST` → loopback, and the two
+# lines below are the only thing that puts anything but loopback in front of a
+# BUILD. Without them the build reaches the model only where `localhost` happens
+# to mean the host, which is Linux with `--network host` and nowhere else — on
+# Docker Desktop the build runs in the WSL2 VM and the client's Ollama is a
+# Windows application outside it. Measured on real Windows: the client's first
+# double-click died here, on `ingest`, with `[Errno 111] Connection refused`.
+#
+# Empty by default on purpose. An unset value is falsy, so `effective_base_url`
+# falls through to loopback and the manual `docker build --network host` in the
+# comment above still behaves exactly as it always did.
+ARG OLLAMA_HOST=""
+ENV OLLAMA_HOST=${OLLAMA_HOST}
+
 RUN stillroom ingest --config client.toml \
  && stillroom bake   --config client.toml
 

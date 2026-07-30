@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 
 import pytest
+import yaml
 
 from stillroom import api, provider
 from stillroom.answers.cache import answer_key
@@ -708,6 +709,132 @@ def test_the_probe_and_the_assistant_share_ONE_model_address():
     assert compose.count("http://host.docker.internal:11434") == 1
 
 
+def test_the_BUILD_reaches_the_model_the_same_way_the_SERVICE_does():
+    """⛔ Real Windows, 2026-07-27. The client's FIRST double-click died on
+    `stillroom ingest` with `[Errno 111] Connection refused` at
+    `http://localhost:11434`.
+
+    The build carried `network: host`, which reaches the model only where
+    `localhost` means the host — true on Linux with the daemon on the same
+    machine, and false on Docker Desktop, where the build runs inside the WSL2
+    VM and the client's Ollama is a Windows application outside it. There was no
+    route at all, and the comment above that line recorded it had been added
+    after testing on Linux.
+
+    ⚠️ The preflight passed seconds earlier. The probes are compose SERVICES,
+    carrying the address and the host mapping; the build inherited neither. That
+    is the recurring defect in this product — a green check on a path the
+    failing step does not take — and it landed on the one screen a client sees
+    first.
+
+    Why they must be the SAME address and not merely both reachable: `ingest`
+    bakes the vectors and `bake` bakes whole answers, so a build that talked to
+    a different Ollama would leave an index and a cache built for a model that
+    never serves, and nothing downstream would say so.
+    """
+    compose = yaml.safe_load(_repo_file("docker-compose.yml"))
+    assistant = compose["services"]["assistant"]
+    build = assistant["build"]
+
+    assert "network" not in build, (
+        "`network: host` is back on the build. It works on Linux and cannot "
+        "work on Docker Desktop, where the build runs in the VM and the "
+        "client's Ollama does not."
+    )
+    assert build["args"]["OLLAMA_HOST"] == assistant["environment"]["OLLAMA_HOST"], (
+        "the build and the running service must talk to the SAME Ollama"
+    )
+    assert "host.docker.internal:host-gateway" in build["extra_hosts"], (
+        "the build needs the host mapping — on Linux `host.docker.internal` "
+        "does not resolve without it"
+    )
+
+
+def test_the_dockerfile_can_be_TOLD_where_ollama_is_before_it_needs_it():
+    """The compose half above is inert without this, and the order matters:
+    `ENV OLLAMA_HOST` set after the `ingest`/`bake` step would satisfy a
+    substring check and change nothing about the build that failed."""
+    dockerfile = _code("Dockerfile")
+
+    assert "ARG OLLAMA_HOST" in dockerfile
+    assert "ENV OLLAMA_HOST=${OLLAMA_HOST}" in dockerfile
+    assert dockerfile.index("ENV OLLAMA_HOST") < dockerfile.index("stillroom ingest")
+
+
+def test_the_launchers_BUILD_as_their_own_step_before_they_refresh():
+    """⛔ `docker compose run` builds the image when it is missing, so a BUILD
+    failure arrived wearing the REFRESH step's error message — and that message
+    blames the client's DOCUMENTS.
+
+    Measured on Windows: a networking fault told the client *"the most likely
+    cause is more documents than this assistant is set up for."* One command,
+    two conditions, the message asserting the wrong one.
+
+    Splitting them also makes the refresh message TRUE. It promises the
+    assistant "will keep answering from the documents it already knew", which
+    was false on a first run, when no assistant existed. Refresh is now only
+    reachable once a build has succeeded.
+    """
+    for name in ("start.sh", "start.cmd"):
+        launcher = _code(name)
+        assert "docker compose build assistant" in launcher, name
+        assert launcher.index("docker compose build assistant") < launcher.index(
+            "stillroom refresh"
+        ), name
+
+
+def test_start_sh_tests_the_command_and_not_the_sed_that_indents_it():
+    """⛔ Live bug, found 2026-07-27 by nearly writing it again.
+
+    `start.sh` has `set -u` and NOT `set -o pipefail`, so a pipeline's status is
+    the last command's. `if ! docker compose run … | sed 's/^/    /'` therefore
+    tested `sed`, which always exits 0 — the failure branch was **unreachable**,
+    and a failing `refresh` was reported as a success before carrying on to
+    `docker compose up -d`.
+
+    `start.cmd` checks `errorlevel 1` and has always been right. The pair
+    disagreed for the usual reason: the machine that ran `start.sh` end to end
+    could always reach its own model, so `refresh` never failed on it.
+    """
+    launcher = _code("start.sh")
+
+    assert "set -o pipefail" not in launcher, (
+        "if pipefail is added, revisit every pipeline in the file — this test "
+        "guards the PIPESTATUS form, not the outcome"
+    )
+
+    # ⚠️ The distinction is SEMANTIC, and two earlier drafts of this guard were
+    # wrong in opposite directions before it was written this narrowly.
+    #
+    # Banning `if ! <cmd>` fails on `if ! docker compose run --rm probe`, which
+    # has no pipe and is correct. Banning every piped condition fails on
+    # `if ! docker compose ps … | grep -q .`, which is ALSO correct — there
+    # `grep`'s status is exactly the question being asked ("was there any
+    # output?"), so the pipeline's status being the last command's is the
+    # feature, not the bug.
+    #
+    # What is never right is testing a FORMATTER. `sed`, `tee` and `cat` exit 0
+    # whatever they were handed, so a condition ending in one tests nothing at
+    # all. That is the shape to ban, and naming the formatters is honest about
+    # the guard being an approximation of a semantic rule rather than the rule.
+    # A pipeline may span lines, so join continuations first.
+    joined = re.sub(r"\\\n\s*", " ", launcher)
+    tested_a_formatter = [
+        line.strip()
+        for line in joined.splitlines()
+        if line.lstrip().startswith(("if ", "while "))
+        and re.search(r"\|\s*(sed|tee|cat)\b", line)
+    ]
+    assert not tested_a_formatter, (
+        "a condition ending in a formatter tests the formatter, which always "
+        f"exits 0 — use ${{PIPESTATUS[0]}}: {tested_a_formatter}"
+    )
+    assert launcher.count("${PIPESTATUS[0]}") == 2, (
+        "the build check and the refresh check both need it"
+    )
+
+
+
 def test_the_firewall_advice_names_the_range_not_one_interface():
     """The rule that fixed the default bridge did not fix the project's, because
     Compose creates a new bridge interface per project — the name changes, the
@@ -773,8 +900,50 @@ def test_the_client_template_agrees_with_the_example_config():
     if not template.is_file():
         pytest.skip("clients/_TEMPLATE lives in the parent repo, not this one")
 
-    values = tomllib.loads(template.read_text(encoding="utf-8"))
-    assert values["retrieval"]["min_similarity"] == pytest.approx(
-        _example_config_values()["retrieval"]["min_similarity"]
+    # ⚠️ REWRITTEN 2026-07-24, because the previous version PASSED while TWO
+    # drifts it exists to catch were live. It compared `min_similarity` and
+    # `embedding.model` — two fields somebody thought of once — so:
+    #   * the `.csv`/`.xlsx` loaders never reached the template, so a
+    #     deployment supporting spreadsheets would have skipped them silently.
+    #   * `warn_only = false` never reached it either. The template still
+    #     carried `true` AND a comment arguing the opposite decision.
+    # A guard over named fields cannot see a field nobody named. So compare the
+    # WHOLE surface, and list only what is *meant* to differ — each of which
+    # differs because it is per-engagement by definition, not by oversight.
+    per_engagement = {
+        ("client",),  # the client's name
+        ("api_key",),  # generated per delivery
+        ("index_path",),  # container path vs the example's
+        ("corpus", "path"),  # ditto
+        ("model", "name"),  # pinned from the hardware check of THEIR machine
+    }
+
+    def leaves(node, prefix=()):
+        for key, value in node.items():
+            path = prefix + (key,)
+            if isinstance(value, dict):
+                yield from leaves(value, path)
+            else:
+                yield path, value
+
+    template_values = dict(leaves(tomllib.loads(template.read_text(encoding="utf-8"))))
+    example_values = dict(leaves(_example_config_values()))
+
+    disagree = sorted(
+        ".".join(path)
+        for path in set(template_values) & set(example_values)
+        if path not in per_engagement and template_values[path] != example_values[path]
     )
-    assert values["embedding"]["model"] == _example_config_values()["embedding"]["model"]
+    assert not disagree, (
+        "clients/_TEMPLATE/config.example.toml disagrees with configs/example.toml "
+        f"on: {', '.join(disagree)}. Config BEATS the code default, so a value that "
+        "is wrong in the template is wrong in every engagement that copies it — "
+        "and no suite over src/ can see a template."
+    )
+
+    missing = sorted(".".join(p) for p in set(example_values) - set(template_values))
+    assert not missing, (
+        "configs/example.toml has settings the client template does not: "
+        f"{', '.join(missing)}. A setting absent from the template is a setting "
+        "the engagement never gets asked about."
+    )

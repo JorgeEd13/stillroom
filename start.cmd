@@ -72,7 +72,7 @@ REM Docker Desktop normally proxies host loopback so this passes where the
 REM Linux equivalent does not — but "normally" is not "verified", and the whole
 REM campaign has been about the gap between those two words.
 REM
-REM ⛔ And the probe used to be on the WRONG NETWORK too: a bare
+REM ⛔ And the probe used to be on the WRONG NETWORK too (ADR-060): a bare
 REM `docker run` lands on the DEFAULT bridge, not the network Compose builds
 REM for this project. Measured on Linux: default bridge HTTP 200, compose
 REM network HTTP 000, preflight green, product dead. `docker compose run`
@@ -106,12 +106,12 @@ if errorlevel 1 (
 )
 
 REM --- 2a. The SECOND model, which the client has no reason to know about --
-REM ⚠️ New with the move to bge-m3, and the likeliest first-run failure of any delivery
+REM ⚠️ New with ADR-059, and the likeliest first-run failure of any delivery
 REM after it. Reading the documents used to need nothing but the image; it now
 REM needs bge-m3 on their Ollama. A client who did exactly what the runbook told
 REM them still fails - inside the build, on a name they have never seen.
 REM
-REM Same compose-service probe as above: same network, same address,
+REM Same compose-service probe as above (ADR-060): same network, same address,
 REM same anchor. It asks for an EMBEDDING, not the tag list - a tag proves the
 REM weights are on disk, only an embedding proves the server can load them.
 REM
@@ -161,7 +161,7 @@ REM --- 2b2. The prepared image, from the file next to this one -------------
 REM ⚠️ Must come before anything that builds - including the document check
 REM below, which runs `docker compose run` and will build the image first.
 REM Loading it here is what makes the first build touch nothing but the
-REM client's own Ollama. Without it the build pulls ~90 libraries
+REM client's own Ollama (ADR-058). Without it the build pulls ~90 libraries
 REM from PyPI and an embedding model from another company's cloud, which was
 REM OBSERVED failing.
 REM BASE_TAG, not BASE_IMAGE: Compose reads BASE_IMAGE from the environment for
@@ -226,13 +226,45 @@ if errorlevel 1 (
 REM --- 2c. Documents changed? Re-read them BEFORE starting -----------------
 REM ⚠️ Re-running this file used to do nothing for a client who had added a
 REM document: `docker compose up -d` does not rebuild an existing image, so the
-REM new file was never indexed and nothing said so.
+REM new file was never indexed and nothing said so (leg B #21, ADR-056).
 REM Stopping first is required, not tidiness — the running service pins its
 REM corpus at startup, and re-indexing underneath it made every question fail.
 docker compose ps --status running --quiet assistant 2>nul | findstr "^" >nul
 if not errorlevel 1 (
   echo Stopping the assistant so the documents can be re-read...
   docker compose stop assistant >nul 2>&1
+)
+
+REM ⚠️ BUILD EXPLICITLY, AND BEFORE THE REFRESH. `docker compose run` builds the
+REM image when it is missing, so a BUILD failure arrived wearing the refresh
+REM step's error message — and that message blames the client's DOCUMENTS.
+REM
+REM Measured on real Windows (F5.9, 2026-07-27): the build could not reach
+REM Ollama, `ingest` died with `Connection refused`, and the client was told
+REM "the most likely cause is more documents than this assistant is set up for."
+REM One command, two conditions, the message asserting the wrong one — the same
+REM shape as leg B #13, and the second time this launcher has blamed the
+REM document count for something that was not about documents.
+REM
+REM Splitting them also makes the refresh message below TRUE. It says the
+REM assistant "will keep answering from the documents it already knew", which
+REM was false on a first run, when no assistant existed yet. Refresh can now
+REM only be reached once a build has succeeded, so by then one does.
+echo Preparing your assistant - this can take several minutes the first time...
+docker compose build assistant
+if errorlevel 1 (
+  echo.
+  echo The assistant could not be prepared. Your documents were not touched
+  echo and nothing on this machine has been changed.
+  echo.
+  echo If the lines above mention a connection being refused, then Ollama is
+  echo running but this build cannot reach it. That is a setting on this
+  echo machine, not a fault in your documents and not something you did wrong.
+  echo.
+  echo Send me this screen and I will tell you the exact change to make.
+  echo.
+  pause
+  exit /b 1
 )
 
 echo Checking your documents...
